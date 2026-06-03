@@ -33,8 +33,11 @@ app.post("/api/resolve-scripture", async (request, response) => {
             "Ты помогаешь приложению с местописаниями.",
             "Верни только JSON.",
             "Нужно извлечь или нормализовать местописание из пользовательского ввода.",
-            "Если пользователь ввёл только ссылку, постарайся вернуть каноническую ссылку и полный текст стиха.",
+            "Если пользователь ввёл только ссылку, обязательно верни каноническую ссылку и полный текст стиха на русском языке.",
             "Если пользователь ввёл текст без ссылки, сохрани текст как есть и оставь reference пустым, если ссылка неочевидна.",
+            "Если пользователь ввёл и ссылку, и текст, приведи их к единому виду.",
+            "Никогда не возвращай пустой text, если reference распознан.",
+            "Если не можешь уверенно дать текст стиха, верни needsReview=true и короткое объяснение в text, что текст не был найден.",
             "Не добавляй пояснений вне JSON.",
             "Формат ответа:",
             '{"reference":"", "text":"", "confidence":"high|medium|low", "needsReview":false}',
@@ -79,6 +82,12 @@ app.post("/api/resolve-scripture", async (request, response) => {
             confidence: String(parsed.confidence ?? "low").trim(),
             needsReview: Boolean(parsed.needsReview)
         };
+
+        if (normalized.reference && !normalized.text) {
+            return response.status(422).json({
+                error: "Model returned a reference without scripture text."
+            });
+        }
 
         if (!normalized.reference && !normalized.text) {
             return response.status(422).json({
