@@ -6,6 +6,7 @@ app.use(express.json({ limit: "1mb" }));
 
 const port = process.env.PORT || 3000;
 const openaiApiKey = process.env.OPENAI_API_KEY;
+const openaiModel = process.env.OPENAI_MODEL || "gpt-5.4-mini";
 
 if (!openaiApiKey) {
     throw new Error("OPENAI_API_KEY is required.");
@@ -41,7 +42,7 @@ app.post("/api/resolve-scripture", async (request, response) => {
         ].join("\n");
 
         const completion = await openai.chat.completions.create({
-            model: "gpt-4o-mini",
+            model: openaiModel,
             temperature: 0.1,
             response_format: { type: "json_object" },
             messages: [

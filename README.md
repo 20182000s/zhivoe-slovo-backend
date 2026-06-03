@@ -6,6 +6,7 @@
 cd render-backend
 npm install
 export OPENAI_API_KEY="your_api_key"
+export OPENAI_MODEL="gpt-5.4-mini"
 npm start
 ```
 
@@ -16,6 +17,7 @@ Use these settings on Render:
 - Build Command: `npm install`
 - Start Command: `npm start`
 - Environment Variable: `OPENAI_API_KEY=...`
+- Environment Variable: `OPENAI_MODEL=gpt-5.4-mini`
 
 ## Endpoint
 
