@@ -32,15 +32,17 @@ app.post("/api/resolve-scripture", async (request, response) => {
         const prompt = [
             "Ты помогаешь приложению с местописаниями.",
             "Верни только JSON.",
-            "Нужно извлечь или нормализовать местописание из пользовательского ввода.",
+            "Нужно извлечь или нормализовать местописания из пользовательского ввода.",
+            "Если в большом тексте встречается несколько отдельных местописаний, выдели каждое отдельно.",
             "Если пользователь ввёл только ссылку, обязательно верни каноническую ссылку и полный текст стиха на русском языке.",
             "Если пользователь ввёл текст без ссылки, сохрани текст как есть и оставь reference пустым, если ссылка неочевидна.",
             "Если пользователь ввёл и ссылку, и текст, приведи их к единому виду.",
             "Никогда не возвращай пустой text, если reference распознан.",
-            "Если не можешь уверенно дать текст стиха, верни needsReview=true и короткое объяснение в text, что текст не был найден.",
+            "Если можешь выделить несколько местописаний, верни массив items с несколькими объектами.",
+            "Если не можешь уверенно дать текст стиха, не включай такой элемент в items.",
             "Не добавляй пояснений вне JSON.",
             "Формат ответа:",
-            '{"reference":"", "text":"", "confidence":"high|medium|low", "needsReview":false}',
+            '{"items":[{"reference":"", "text":""}], "confidence":"high|medium|low", "needsReview":false}',
             `Пользовательский ввод: ${input}`
         ].join("\n");
 
@@ -77,19 +79,25 @@ app.post("/api/resolve-scripture", async (request, response) => {
         }
 
         const normalized = {
-            reference: String(parsed.reference ?? "").trim(),
-            text: String(parsed.text ?? "").trim(),
+            items: Array.isArray(parsed.items)
+                ? parsed.items
+                    .map((item) => ({
+                        reference: String(item?.reference ?? "").trim(),
+                        text: String(item?.text ?? "").trim()
+                    }))
+                    .filter((item) => item.reference || item.text)
+                : [],
             confidence: String(parsed.confidence ?? "low").trim(),
             needsReview: Boolean(parsed.needsReview)
         };
 
-        if (normalized.reference && !normalized.text) {
+        if (normalized.items.some((item) => item.reference && !item.text)) {
             return response.status(422).json({
                 error: "Model returned a reference without scripture text."
             });
         }
 
-        if (!normalized.reference && !normalized.text) {
+        if (!normalized.items.length) {
             return response.status(422).json({
                 error: "Could not resolve scripture from input."
             });
