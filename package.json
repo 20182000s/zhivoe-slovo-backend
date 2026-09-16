@@ -1,13 +1,9 @@
 {
   "name": "zhivoe-slovo-render-backend",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "private": true,
-  "type": "module",
   "scripts": {
-    "start": "node server.js"
-  },
-  "dependencies": {
-    "express": "^4.21.2",
-    "openai": "^4.104.0"
+    "postinstall": "python3 -m pip install --target .python-packages -r requirements.txt",
+    "start": "PYTHONPATH=.python-packages python3 -m gunicorn app:application --bind 0.0.0.0:${PORT:-3000} --workers 1 --threads 4 --timeout 180"
   }
 }

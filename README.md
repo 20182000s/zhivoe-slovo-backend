@@ -1,48 +1,16 @@
-# Render Backend
+# Слово API v2
 
-## Local run
+Backend for the native iPhone app with Synodal and Ogienko Bible texts.
 
-```bash
-cd render-backend
-npm install
-export OPENAI_API_KEY="your_api_key"
-export OPENAI_MODEL="gpt-5.4-mini"
-npm start
-```
+Render keeps its existing Node service, URL and plan. npm install installs Gunicorn; npm start runs Python WSGI.
 
-## Render setup
+Required environment: OPENAI_API_KEY, API_TOKEN (at least 24 random characters).
+Optional: OPENAI_MODEL (defaults to gpt-6-astra), DATABASE_PATH.
 
-Use these settings on Render:
+GET /health is public. POST /v1/status and /v2/import, /v2/practice, /v2/answer, /v2/reflect require Bearer API_TOKEN.
 
-- Build Command: `npm install`
-- Start Command: `npm start`
-- Environment Variable: `OPENAI_API_KEY=...`
-- Environment Variable: `OPENAI_MODEL=gpt-5.4-mini`
+Tests: python3 -m unittest discover -v
 
-## Endpoint
+Bible quotations come from the bundled corpus, never from generated text. See SCROLLMAPPER-LICENSE.txt. Original source: https://github.com/scrollmapper/bible_databases.
 
-`POST /api/resolve-scripture`
-
-Request:
-
-```json
-{
-  "input": "Псалом 126:3"
-}
-```
-
-Response:
-
-```json
-{
-  "reference": "Псалом 126:3",
-  "text": "Вот наследие от Господа: дети; награда от Него — плод чрева.",
-  "confidence": "medium",
-  "needsReview": true
-}
-```
-
-## Important
-
-This version uses OpenAI to normalize and resolve scripture text. It is acceptable for prototyping, but it is not an authoritative Bible text source.
-For production, connect this endpoint to a real Bible database and use the model only for parsing/normalization.
+The previous Node source remains in server.js and Git history for rollback; npm start runs app.py.
