@@ -274,8 +274,29 @@ def local_import2(text, version):
         out.append(grouped(refs))
     return out
 
+def inline_import2(text, version):
+    """Find explicit references inside a longer free-text answer."""
+    aliases=[]
+    for book in BOOKS:
+        if book['translation']!=version:continue
+        for alias in book['aliases']:
+            if len(normalize(alias))>=3:aliases.append((alias,book['id']))
+    aliases.sort(key=lambda pair:len(pair[0]),reverse=True)
+    out=[];seen=set()
+    for alias,book_id in aliases:
+        escaped=re.escape(alias).replace(r'\ ',r'\s+')
+        pattern=rf'(?<!\w){escaped}(?!\w)\s+(\d+)\s*[:.,]\s*(\d+)(?:\s*[-–—]\s*(\d+))?'
+        for match in re.finditer(pattern,text,flags=re.IGNORECASE):
+            chapter,first,last=(int(value) if value else None for value in match.groups())
+            passage=grouped(resolve(book_id,chapter,first,last or first,version))
+            if passage['id'] not in seen:
+                seen.add(passage['id']);out.append((match.start(),passage))
+    return [passage for _,passage in sorted(out,key=lambda pair:pair[0])[:20]]
+
 def parse_references(text, version):
     found=local_import2(text,version)
+    if found:return found
+    found=inline_import2(text,version)
     if found:return found
     result=ask('Распознай местописания, которые человек указал САМ: ссылка, надиктованные номера, цитата или узнаваемый пересказ. '
         'Не добавляй подходящие по теме стихи от себя. Соседние стихи одного смыслового отрывка объедини в диапазон. '

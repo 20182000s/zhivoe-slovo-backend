@@ -8,6 +8,11 @@ class FeedbackTests(unittest.TestCase):
     def tearDown(self):self.p.stop();self.tmp.cleanup()
     def test_range_is_one_passage(self):
         out=app.import2({'text':'Иоанна 3:16–17','translation':'ru'})['passages'];self.assertEqual(1,len(out));self.assertEqual(2,len(out[0]['id'].split('~')));self.assertEqual('Иоанна 3:16–17',out[0]['reference'])
+    def test_explicit_reference_inside_explanation(self):
+        out=app.parse_references('Я вспомнил Иоанна 3:16 — этот стих говорит о Божьей любви.','ru')
+        self.assertEqual(['ru|John|3|16'],[p['id'] for p in out])
+        out=app.parse_references('Мені допомагає Івана 3:16, бо Бог полюбив світ.','uk')
+        self.assertEqual(['uk|John|3|16'],[p['id'] for p in out])
     def test_catalog_has_ten_valid_ranges_per_topic_in_both_languages(self):
         self.assertEqual(15,len(app.CATALOG['topics']))
         for topic in app.CATALOG['topics']:
