@@ -15,7 +15,8 @@ import urllib.error
 import urllib.request
 
 ROOT = Path(__file__).parent
-BOOKS = json.loads((ROOT / 'data/Bible.json').read_text())
+DATA_ROOT = ROOT / 'data' if (ROOT / 'data/Bible.json').is_file() else ROOT
+BOOKS = json.loads((DATA_ROOT / 'Bible.json').read_text())
 PASSAGES = {}
 for book in BOOKS:
     for chapter, lines in enumerate(book['chapters'], 1):
@@ -253,8 +254,8 @@ def rate_limit(owner):
     if count>30:raise Error('Слишком много запросов. Подожди минуту.',429)
 
 # Version 2: ranges are one passage, and answers are recalled freely.
-CATALOG = json.loads((ROOT / 'data/Content.json').read_text())
-PARALLEL = json.loads((ROOT / 'data/Parallel.json').read_text())
+CATALOG = json.loads((DATA_ROOT / 'Content.json').read_text())
+PARALLEL = json.loads((DATA_ROOT / 'Parallel.json').read_text())
 REVERSE = {}
 for ru_id, uk_ids in PARALLEL.items():
     for uk_id in uk_ids: REVERSE.setdefault(uk_id, []).append(ru_id)
