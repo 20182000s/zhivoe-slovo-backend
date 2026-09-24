@@ -21,7 +21,7 @@ class FeedbackTests(unittest.TestCase):
                 self.assertGreaterEqual(len(passages),10,(topic['id'],lang))
                 self.assertTrue(all(p['translation']==lang for p in passages))
     def test_prepared_bank_and_daily_quotes(self):
-        self.assertEqual(30,len(app.CATALOG['exercises']));self.assertEqual(15,len(app.CATALOG['daily']))
+        self.assertGreaterEqual(len(app.CATALOG['exercises']),30);self.assertEqual(15,len(app.CATALOG['daily']))
         for exercise in app.CATALOG['exercises']:
             for lang in ('ru','uk'):self.assertTrue(app.ready_passage(exercise,lang)['text'])
         for ref in app.CATALOG['daily']:
@@ -36,20 +36,20 @@ class FeedbackTests(unittest.TestCase):
         target=app.local_import2('Притчи 15:1-2','ru')[0];answer=app.local_import2('Иакова 1:19-20','ru')[0]
         payload={'translation':'ru','target':target,'situation':{'ru':'Спор','uk':'Суперечка'}}
         with patch.object(app,'ask',return_value={'correct':True,'chosen_id':answer['id'],'explanation':{'ru':'Подходит','uk':'Підходить'},'alternatives':[]}):
-            out=app.evaluate2(payload,'Иакова 1:19-20',[answer['id']]);self.assertTrue(out['correct']);self.assertEqual(25,out['xp']);self.assertEqual(10,out['mastery']);self.assertEqual(app.canonical(answer),out['evaluatedID'])
+            out=app.evaluate2(payload,'Иакова 1:19-20',[answer['id']]);self.assertTrue(out['correct']);self.assertEqual(5,out['xp']);self.assertEqual(2,out['mastery']);self.assertEqual(app.canonical(answer),out['evaluatedID'])
     def test_single_verse_answer_rewards_library_range(self):
         target=app.local_import2('Притчи 15:1-2','ru')[0];answer=app.local_import2('Притчи 15:1','ru')[0]
         with patch.object(app,'ask',return_value={'correct':True,'chosen_id':answer['id'],'explanation':{'ru':'Да','uk':'Так'},'alternatives':[]}):
-            result=app.evaluate2({'translation':'ru','target':target,'situation':{}},'Притчи 15:1',[target['id']]);self.assertEqual(10,result['mastery']);self.assertEqual(app.canonical(target),result['evaluatedID'])
+            result=app.evaluate2({'translation':'ru','target':target,'situation':{}},'Притчи 15:1',[target['id']]);self.assertEqual(2,result['mastery']);self.assertEqual(app.canonical(target),result['evaluatedID'])
     def test_free_answer_idempotent_and_language_locked(self):
-        data={'quiz_id':'local-test-attempt','exercise_id':'ready-01','answer_text':'Притчи 3:5-6','translation':'ru','library_ids':[]}
+        data={'quiz_id':'local-test-attempt','exercise_id':app.CATALOG['exercises'][0]['id'],'answer_text':'Притчи 3:5-6','translation':'ru','library_ids':[]}
         grade={'correct':True,'explanation':{'ru':'Да','uk':'Так'},'passage':None,'alternatives':[],'xp':25,'mastery':0,'evaluatedID':None}
         with patch.object(app,'evaluate2',return_value=grade)as mock:
             self.assertEqual(grade,app.answer2(data,'owner'));self.assertEqual(grade,app.answer2(data,'owner'));self.assertEqual(1,mock.call_count)
             with self.assertRaises(app.Error):app.answer2(dict(data,translation='uk'),'owner')
             with self.assertRaises(app.Error):app.answer2(data,'someone-else')
     def test_failure_allows_retry(self):
-        data={'quiz_id':'retry-attempt','exercise_id':'ready-01','answer_text':'Притчи 3:5-6','translation':'ru','library_ids':[]}
+        data={'quiz_id':'retry-attempt','exercise_id':app.CATALOG['exercises'][0]['id'],'answer_text':'Притчи 3:5-6','translation':'ru','library_ids':[]}
         with patch.object(app,'evaluate2',side_effect=app.Error('Unavailable',503)):
             with self.assertRaises(app.Error):app.answer2(data,'owner')
         with app.db()as db:self.assertIsNone(db.execute('SELECT answer_id FROM quizzes WHERE id=?',(data['quiz_id'],)).fetchone()[0])

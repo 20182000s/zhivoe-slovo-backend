@@ -30,13 +30,17 @@ class SeptemberFeedbackTests(unittest.TestCase):
     def test_book_and_topic_filters_ground_target(self):
         for language in ('ru','uk'):
             for mode in ('book','topic','all'):
-                topic=app.CATALOG['topics'][0]
-                with patch.object(app,'ask',return_value={'situation':{'ru':'Ситуация','uk':'Ситуація'}}) as ask:
-                    app.practice2({'translation':language,'scope':'all','filter':mode,'book':'John','topic':topic['id']},'test')
-                    target=ask.call_args.args[1]['target']
-                    self.assertEqual(language,target['translation'])
-                    if mode=='book':self.assertEqual('John',target['book'])
-                    if mode=='topic':self.assertIn(app.canonical(target),[app.canonical(app.local_import2(r,'ru')[0]) for r in topic['references']])
+                exercise=app.CATALOG['exercises'][0]
+                book=app.ready_passage(exercise,language)['book']
+                with patch.object(app,'ask',side_effect=AssertionError('Prepared practice must not call AI')):
+                    quiz=app.practice2({'translation':language,'scope':'all','filter':mode,'book':book,'topic':exercise['topic']},'test')
+                with app.db() as db:
+                    payload=json.loads(db.execute('SELECT payload FROM quizzes WHERE id=?',(quiz['id'],)).fetchone()[0])
+                selected=next(e for e in app.CATALOG['exercises'] if e['id']==payload['exercise_id'])
+                self.assertEqual(language,payload['target']['translation'])
+                self.assertEqual(selected['situation'],quiz['situation'])
+                if mode=='book':self.assertTrue(any(p['book']==book for p in payload['accepted_answers']))
+                if mode=='topic':self.assertEqual(exercise['topic'],selected['topic'])
     def test_unrecognized_answer_shows_target(self):
         with patch.object(app,'parse_references',return_value=[]):
             grade=app.evaluate2({'translation':'ru','target':self.target},'не помню',[])
