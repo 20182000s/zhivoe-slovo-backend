@@ -89,11 +89,21 @@ BASE_INSTRUCTIONS = '''Ты помощник приложения для изу�
 Не обвиняй человека в несчастьях и не обещай гарантированного исцеления. Предлагай конкретный, бережный шаг.
 Возвращай только запрошенную структуру. Цитаты НЕ генерируй: сервер сам возьмёт точный текст из базы.'''
 
-def ask(task, data, schema):
+def model_for(purpose='general'):
+    # Enable only after comparing the candidate models on the RU/UK evaluation set.
+    legacy=os.environ.get('OPENAI_MODEL','gpt-6-astra')
+    if os.environ.get('OPENAI_ROUTING_ENABLED','false').lower()!='true':return legacy
+    if purpose=='complex':return os.environ.get('OPENAI_COMPLEX_MODEL','gpt-6-astra')
+    if purpose=='reference':return os.environ.get('OPENAI_REFERENCE_MODEL','gpt-6-sol')
+    return os.environ.get('OPENAI_GENERAL_MODEL','gpt-6-sol')
+
+def ask(task, data, schema, *, purpose='general'):
     key=os.environ.get('OPENAI_API_KEY','')
     if not key: raise Error('На сервере ещё не настроен ключ OpenAI.',503)
     ai_budget()
-    payload={'model':os.environ.get('OPENAI_MODEL','gpt-6-astra'),'store':False,
+    selected=model_for(purpose)
+    started=time.monotonic()
+    payload={'model':selected,'store':False,
              'instructions':BASE_INSTRUCTIONS+'\n'+task,
              'input':json.dumps(data,ensure_ascii=False),
              'text':{'format':{'type':'json_schema','name':'slovo_result','strict':True,'schema':schema}},
@@ -103,6 +113,13 @@ def ask(task, data, schema):
     try:
         with urllib.request.urlopen(req,timeout=75) as response: body=json.load(response)
     except (urllib.error.URLError,TimeoutError): raise Error('OpenAI сейчас не ответил. Проверь настройки сервера или попробуй позже.',502)
+    # Operational measurements only: never log the user's story, answer or API key.
+    usage=body.get('usage',{})
+    print(json.dumps({'event':'ai_usage','model':selected,'purpose':purpose,
+        'seconds':round(time.monotonic()-started,3),'status':body.get('status'),
+        'input_tokens':usage.get('input_tokens'),'output_tokens':usage.get('output_tokens'),
+        'cached_tokens':usage.get('input_tokens_details',{}).get('cached_tokens',0),
+        'reasoning_tokens':usage.get('output_tokens_details',{}).get('reasoning_tokens',0)}),flush=True)
     if body.get('status')!='completed':raise Error('ИИ не завершил ответ. Попробуй ещё раз.',502)
     parts=[]
     for item in body.get('output',[]):
@@ -333,7 +350,7 @@ def parse_references(text, version):
         'Не добавляй подходящие по теме стихи от себя. Соседние стихи одного смыслового отрывка объедини в диапазон. '
         'Неизвестный или неоднозначный ответ: пустой references. Идентификаторы книг строго из списка.',
         {'text':text,'translation':version,'books':[{'id':b['id'],'name':b['name']} for b in BOOKS if b['translation']==version]},
-        object_schema({'references':{'type':'array','items':REF2}}))
+        object_schema({'references':{'type':'array','items':REF2}}),purpose='reference')
     refs=result.get('references',[])
     if not isinstance(refs,list) or len(refs)>20:raise Error('Слишком много отрывков в ответе.')
     return [grouped(resolve(r.get('book'),r.get('chapter'),r.get('first'),r.get('last'),version)) for r in refs]
@@ -522,7 +539,7 @@ def reflect2(data):
     if scope=='all':
         refs=ask('Предложи до двух библейских местописаний, которые помогают понять или описывают рассказанную ситуацию и могут подсказать действие. '
             'Отрывок может включать несколько соседних стихов. Идентификаторы книг строго из списка. Пока только ссылки, без толкования.',
-            {'day':text,'books':[{'id':b['id'],'name':b['name']} for b in BOOKS if b['translation']==version]},object_schema({'references':{'type':'array','items':REF2}}))
+            {'day':text,'books':[{'id':b['id'],'name':b['name']} for b in BOOKS if b['translation']==version]},object_schema({'references':{'type':'array','items':REF2}}),purpose='complex')
         verses=[grouped(resolve(r.get('book'),r.get('chapter'),r.get('first'),r.get('last'),version)) for r in refs.get('references',[])[:2]]
     if not verses:return {'summary':{'ru':'Подходящие отрывки не найдены. Попробуй подробнее описать ситуацию.','uk':'Доречних уривків не знайдено. Спробуй докладніше описати ситуацію.'},'suggestions':[]}
     schema=object_schema({'summary':WORDS,'suggestions':{'type':'array','maxItems':2,'items':object_schema({'id':{'type':'string','enum':[p['id'] for p in verses]},'reason':WORDS,'action':WORDS,'shortAction':WORDS})}})
@@ -530,7 +547,7 @@ def reflect2(data):
         'Дай объяснение связи и конкретное действие, опираясь на точные тексты и их контекст. Если ничего не подходит, suggestions пустой. '
         'Действие формулируй на следующий раз в похожей ситуации, не требуй выполнить сегодня. '
         'В shortAction кратко переформулируй действие одной фразой до 100 символов на каждом языке для списка применений. '
-        'Дай одинаковый по смыслу разбор на русском и украинском. Не цитируй по памяти и не говори от имени Бога.',{'day':text,'passages':verses},schema)
+        'Дай одинаковый по смыслу разбор на русском и украинском. Не цитируй по памяти и не говори от имени Бога.',{'day':text,'passages':verses},schema,purpose='complex' if scope=='all' else 'general')
     allowed={p['id']:p for p in verses};result=[];seen=set()
     for s in out.get('suggestions',[])[:2]:
         if s.get('id') not in allowed:raise Error('ИИ предложил отрывок вне выбранного списка.',502)
