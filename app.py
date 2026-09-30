@@ -555,6 +555,32 @@ def reflect2(data):
         seen.add(s['id']);result.append({'passage':allowed[s['id']],'reason':s['reason'],'action':s['action'],'shortAction':s.get('shortAction',s['action'])})
     return {'summary':out['summary'],'suggestions':result}
 
+def prayer2(data):
+    text=required_text(data,'text',3);version=translation(data)
+    refs=ask('Подбери 2–3 различных библейских отрывка для темы личной молитвы. Верни только ссылки. '
+        'Используй идентификаторы книг из списка. Не обещай определённого исхода событий.',
+        {'request':text,'books':[{'id':b['id'],'name':b['name']} for b in BOOKS if b['translation']==version]},
+        object_schema({'references':{'type':'array','minItems':2,'maxItems':3,'items':REF2}}),purpose='complex')
+    passages=[];seen=set()
+    for r in refs.get('references',[])[:3]:
+        p=grouped(resolve(r.get('book'),r.get('chapter'),r.get('first'),r.get('last'),version))
+        if p['id'] not in seen:seen.add(p['id']);passages.append(p)
+    if len(passages)<2:raise Error('Не удалось подобрать разные отрывки. Попробуй ещё раз.',502)
+    schema=object_schema({'prayer':WORDS,'reasons':{'type':'array','minItems':2,'maxItems':3,
+        'items':object_schema({'id':{'type':'string','enum':[p['id'] for p in passages]},'reason':WORDS})}})
+    out=ask('Напиши короткую личную молитву от первого лица по запросу и данным отрывкам. '
+        'Молитва — предложенный текст человека, не слова Бога и не библейская цитата. '
+        'Не обещай исцеление, деньги или гарантированный результат; не осуждай человека. '
+        'Дай молитву и объяснение уместности каждого выданного отрывка на русском и украинском. '
+        'Не меняй и не цитируй по памяти текст Писания. Используй все выданные id по одному разу.',
+        {'request':text,'passages':passages},schema)
+    reasons={r['id']:r['reason'] for r in out.get('reasons',[])}
+    if set(reasons)!=seen:raise Error('ИИ вернул неполный подбор отрывков.',502)
+    empty={'ru':'','uk':''}
+    return {'prayer':out['prayer'],'suggestions':[{'passage':p,'reason':reasons[p['id']],
+        'action':empty,'shortAction':empty} for p in passages]}
+
+
 UK_ERRORS={
 'На сервере ещё не настроен ключ OpenAI.':'На сервері ще не налаштовано ключ OpenAI.',
 'Неверный ключ доступа к серверу.':'Неправильний ключ доступу до сервера.',
@@ -591,6 +617,7 @@ def application(environ,start_response):
             elif path=='/v2/practice':result=practice2(data,owner)
             elif path=='/v2/answer':result=answer2(data,owner)
             elif path=='/v2/reflect':result=reflect2(data)
+            elif path=='/v2/prayer':result=prayer2(data)
             elif path=='/v1/status':result={'ai':bool(os.environ.get('OPENAI_API_KEY'))}
             elif path=='/v1/import':result=import_passages(data)
             elif path=='/v1/reflect':result=reflect(data)
