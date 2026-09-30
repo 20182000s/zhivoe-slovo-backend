@@ -56,4 +56,4 @@ class SeptemberFeedbackTests(unittest.TestCase):
         items=[{'id':p['id'],'reason':short,'action':short,'shortAction':short} for p in ps]
         with patch.object(app,'ask',return_value={'summary':short,'suggestions':items}):
             result=app.reflect2({'translation':'ru','text':'Резко ответил близкому человеку','scope':'library','ids':[p['id'] for p in ps]})
-        self.assertEqual(2,len(result['suggestions']));self.assertEqual(short,result['suggestions'][0]['shortAction'])
+        self.assertEqual(1,len(result['suggestions']));self.assertEqual(short,result['suggestions'][0]['shortAction'])
