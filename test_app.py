@@ -64,8 +64,10 @@ class SlovoTests(unittest.TestCase):
         with patch.object(app,'ask',side_effect=lambda task,data,schema:{'situation':'Ситуация','correct_ids':[p['id'] for p in data['options']],'explanation':'Оба стиха уместны.'}):quiz=app.make_practice({'ids':[self.p['id'],self.q['id']]},'alice')
         result=app.answer({'quiz_id':quiz['id'],'answer_id':self.q['id']},'alice');self.assertTrue(result['correct']);self.assertEqual(self.q,result['passage'])
     def test_rate_limit(self):
-        for _ in range(30):self.assertEqual(200,self.request('/v1/status',{})[0])
-        self.assertEqual(429,self.request('/v1/status',{})[0])
+        # Keep all requests in one minute; wall-clock rollover otherwise makes this flaky.
+        with patch.object(app.time,'time',return_value=1800000000):
+            for _ in range(30):self.assertEqual(200,self.request('/v1/status',{})[0])
+            self.assertEqual(429,self.request('/v1/status',{})[0])
     def test_structured_responses_request(self):
         class Response:
             def __enter__(self):return self
