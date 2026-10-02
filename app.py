@@ -28,9 +28,10 @@ DB_PATH = os.environ.get('DATABASE_PATH', '/tmp/slovo-quizzes.sqlite3')
 DB_LOCK = threading.Lock()
 
 class Error(Exception):
-    def __init__(self, message, status=400):
+    def __init__(self, message, status=400, uk=None):
         super().__init__(message)
         self.status = status
+        self.uk = uk
 
 def db():
     connection = sqlite3.connect(DB_PATH, timeout=20)
@@ -43,9 +44,15 @@ def normalize(value):
 
 def required_text(data, key, minimum=1, maximum=12000):
     value = data.get(key)
-    if not isinstance(value, str) or not minimum <= len(value.strip()) <= maximum:
-        raise Error(f'Поле {key}: допустимая длина от {minimum} до {maximum} символов.')
+    length = len(value.strip()) if isinstance(value, str) else 0
+    if length < minimum:
+        raise Error(f'Добавь текст: минимум {minimum} символов, сейчас {length}. Не хватает {minimum-length}.',
+                    uk=f'Додай текст: щонайменше {minimum} символів, зараз {length}. Бракує {minimum-length}.')
+    if length > maximum:
+        raise Error(f'Лимит — {maximum} символов. В тексте {length}, убери ещё {length-maximum}.',
+                    uk=f'Ліміт — {maximum} символів. У тексті {length}, прибери ще {length-maximum}.')
     return value.strip()
+
 
 def translation(data):
     value = data.get('translation', 'ru')
@@ -97,9 +104,9 @@ def model_for(purpose='general'):
     if purpose=='reference':return os.environ.get('OPENAI_REFERENCE_MODEL','gpt-6-sol')
     return os.environ.get('OPENAI_GENERAL_MODEL','gpt-6-sol')
 
-def ask(task, data, schema, *, purpose='general'):
+def ask(task, data, schema, *, purpose='general', max_output_tokens=6000):
     key=os.environ.get('OPENAI_API_KEY','')
-    if not key: raise Error('На сервере ещё не настроен ключ OpenAI.',503)
+    if not key: raise Error('Обработка запросов пока недоступна. Попробуй позже.',503)
     ai_budget()
     selected=model_for(purpose)
     started=time.monotonic()
@@ -107,12 +114,12 @@ def ask(task, data, schema, *, purpose='general'):
              'instructions':BASE_INSTRUCTIONS+'\n'+task,
              'input':json.dumps(data,ensure_ascii=False),
              'text':{'format':{'type':'json_schema','name':'slovo_result','strict':True,'schema':schema}},
-             'max_output_tokens':6000}
+             'max_output_tokens':max_output_tokens}
     req=urllib.request.Request('https://api.openai.com/v1/responses',data=json.dumps(payload).encode(),
         headers={'Authorization':'Bearer '+key,'Content-Type':'application/json'})
     try:
         with urllib.request.urlopen(req,timeout=75) as response: body=json.load(response)
-    except (urllib.error.URLError,TimeoutError): raise Error('OpenAI сейчас не ответил. Проверь настройки сервера или попробуй позже.',502)
+    except (urllib.error.URLError,TimeoutError): raise Error('Сервис не ответил вовремя. Попробуй ещё раз немного позже.',502)
     # Operational measurements only: never log the user's story, answer or API key.
     usage=body.get('usage',{})
     print(json.dumps({'event':'ai_usage','model':selected,'purpose':purpose,
@@ -120,14 +127,14 @@ def ask(task, data, schema, *, purpose='general'):
         'input_tokens':usage.get('input_tokens'),'output_tokens':usage.get('output_tokens'),
         'cached_tokens':usage.get('input_tokens_details',{}).get('cached_tokens',0),
         'reasoning_tokens':usage.get('output_tokens_details',{}).get('reasoning_tokens',0)}),flush=True)
-    if body.get('status')!='completed':raise Error('ИИ не завершил ответ. Попробуй ещё раз.',502)
+    if body.get('status')!='completed':raise Error('Не удалось завершить обработку. Попробуй ещё раз.',502)
     parts=[]
     for item in body.get('output',[]):
         for content in item.get('content',[]):
-            if content.get('type')=='refusal':raise Error('ИИ не смог обработать этот запрос. Попробуй переформулировать.',422)
+            if content.get('type')=='refusal':raise Error('Не удалось обработать запрос. Попробуй переформулировать.',422)
             if content.get('type')=='output_text':parts.append(content.get('text',''))
     try: return json.loads(''.join(parts))
-    except (ValueError,TypeError):raise Error('ИИ вернул неполный ответ. Попробуй ещё раз.',502)
+    except (ValueError,TypeError):raise Error('Получен неполный ответ. Попробуй ещё раз.',502)
 
 def import_passages(data):
     text=required_text(data,'text'); version=translation(data)
@@ -162,10 +169,10 @@ def reflect(data):
         task='Осмысли рассказ о дне. Предложи до трёх подходящих местописаний Библии. Используй идентификаторы книг из списка. Дай объяснение и конкретное действие, избегая утверждений о точной формулировке стиха.'
     out=ask(task,payload,object_schema({'summary':STRING,'suggestions':{'type':'array','items':object_schema(props)}}))
     suggestions=[];seen=set(); allowed={p['id'] for p in verses}
-    if not isinstance(out.get('summary'),str) or not isinstance(out.get('suggestions'),list):raise Error('Неполный разбор от ИИ.',502)
+    if not isinstance(out.get('summary'),str) or not isinstance(out.get('suggestions'),list):raise Error('Получен неполный разбор. Попробуй ещё раз.',502)
     for s in out['suggestions'][:3]:
         if scope=='library':
-            if s.get('id') not in allowed:raise Error('ИИ предложил стих вне библиотеки. Повтори запрос.',502)
+            if s.get('id') not in allowed:raise Error('Не удалось подобрать стих из библиотеки. Повтори запрос.',502)
             p=PASSAGES[s['id']]
         else:p=resolve(s.get('book'),s.get('chapter'),s.get('verse'),s.get('verse'),version)[0]
         if p['id'] in seen:continue
@@ -178,7 +185,7 @@ def reflect(data):
             object_schema({'summary':STRING,'suggestions':{'type':'array','items':object_schema({'id':{'type':'string','enum':[s['passage']['id'] for s in suggestions]},'reason':STRING,'action':STRING})}}))
         allowed={s['passage']['id'] for s in suggestions};suggestions=[]
         for s in grounded.get('suggestions',[])[:3]:
-            if s.get('id') not in allowed:raise Error('Некорректная ссылка от ИИ.',502)
+            if s.get('id') not in allowed:raise Error('Не удалось определить ссылку на отрывок. Повтори запрос.',502)
             suggestions.append({'passage':PASSAGES[s['id']],'reason':required_text(s,'reason'),'action':required_text(s,'action')})
         out['summary']=required_text(grounded,'summary')
     return {'summary':out['summary'],'suggestions':suggestions}
@@ -227,7 +234,7 @@ def answer(data,owner):
 
 def authorize(environ):
     expected=os.environ.get('API_TOKEN','')
-    if len(expected)<24:raise Error('Сервер ещё не настроен: нужен API_TOKEN длиной от 24 символов.',503)
+    if len(expected)<24:raise Error('Подключение пока недоступно. Попробуй позже.',503)
     actual=environ.get('HTTP_AUTHORIZATION','')
     if hmac.compare_digest(actual.encode(),('Bearer '+expected).encode()):
         return hashlib.sha256(expected.encode()).hexdigest()
@@ -258,7 +265,7 @@ def ai_budget():
         connection.execute('BEGIN IMMEDIATE')
         connection.execute('DELETE FROM ai_budget WHERE day < ?',(day-1,))
         count=connection.execute('SELECT count FROM ai_budget WHERE day=?',(day,)).fetchone()
-        if count and count[0]>=limit:raise Error('Дневной лимит запросов исчерпан. Попробуй завтра.',429)
+        if count and count[0]>=limit:raise Error(f'Общий дневной лимит — {limit} запросов. Осталось 0; этот запрос превышает лимит на 1. Попробуй завтра.',429, uk=f'Спільний денний ліміт — {limit} запитів. Залишилося 0; цей запит перевищує ліміт на 1. Спробуй завтра.')
         connection.execute('INSERT INTO ai_budget VALUES (?,1) ON CONFLICT(day) DO UPDATE SET count=count+1',(day,))
 
 def rate_limit(owner):
@@ -268,7 +275,7 @@ def rate_limit(owner):
         connection.execute('DELETE FROM rate_limits WHERE minute < ?',(minute-2,))
         connection.execute('INSERT INTO rate_limits VALUES (?,?,1) ON CONFLICT(owner,minute) DO UPDATE SET count=count+1',(owner,minute))
         count=connection.execute('SELECT count FROM rate_limits WHERE owner=? AND minute=?',(owner,minute)).fetchone()[0]
-    if count>30:raise Error('Слишком много запросов. Подожди минуту.',429)
+    if count>30:raise Error(f'Лимит — 30 запросов в минуту. Сейчас {count}, превышение — {count-30}. Подожди минуту.',429, uk=f'Ліміт — 30 запитів за хвилину. Зараз {count}, перевищення — {count-30}. Зачекай хвилину.')
 
 # Version 2: ranges are one passage, and answers are recalled freely.
 CATALOG = json.loads((DATA_ROOT / 'Content.json').read_text())
@@ -339,24 +346,31 @@ def inline_import2(text, version):
             passage=grouped(resolve(book_id,chapter,first,last or first,version))
             if passage['id'] not in seen:
                 seen.add(passage['id']);out.append((match.start(),passage))
-    return [passage for _,passage in sorted(out,key=lambda pair:pair[0])[:20]]
+    return [passage for _,passage in sorted(out,key=lambda pair:pair[0])]
 
-def parse_references(text, version):
+def check_reference_count(refs, maximum):
+    if not isinstance(refs, list):raise Error('Получен неполный ответ. Попробуй ещё раз.',502)
+    if len(refs)>maximum:
+        raise Error(f'Можно добавить до {maximum} отрывков за раз. Распознано {len(refs)}: перенеси {len(refs)-maximum} в следующее добавление.',
+                    uk=f'Можна додати до {maximum} уривків за раз. Розпізнано {len(refs)}: перенеси {len(refs)-maximum} у наступне додавання.')
+    return refs
+
+def parse_references(text, version, maximum=20):
     found=local_import2(text,version)
-    if found:return found
+    if found:return check_reference_count(found,maximum)
     found=inline_import2(text,version)
-    if found:return found
+    if found:return check_reference_count(found,maximum)
     result=ask('Распознай местописания, которые человек указал САМ: ссылка, надиктованные номера, цитата или узнаваемый пересказ. '
         'Не добавляй подходящие по теме стихи от себя. Соседние стихи одного смыслового отрывка объедини в диапазон. '
         'Неизвестный или неоднозначный ответ: пустой references. Идентификаторы книг строго из списка.',
         {'text':text,'translation':version,'books':[{'id':b['id'],'name':b['name']} for b in BOOKS if b['translation']==version]},
-        object_schema({'references':{'type':'array','items':REF2}}),purpose='reference')
+        object_schema({'references':{'type':'array','items':REF2}}),purpose='reference', max_output_tokens=16000 if maximum>20 else 6000)
     refs=result.get('references',[])
-    if not isinstance(refs,list) or len(refs)>20:raise Error('Слишком много отрывков в ответе.')
+    check_reference_count(refs,maximum)
     return [grouped(resolve(r.get('book'),r.get('chapter'),r.get('first'),r.get('last'),version)) for r in refs]
 
 def import2(data):
-    refs=parse_references(required_text(data,'text'),translation(data))
+    refs=parse_references(required_text(data,'text',maximum=200000),translation(data),maximum=100)
     if not refs:raise Error('Не удалось распознать отрывок. Укажи книгу и стихи.')
     return {'passages':list({p['id']:p for p in refs}.values())}
 
@@ -478,7 +492,7 @@ def evaluate_answer2(payload, text, library_ids):
          'books':[{'id':b['id'],'name':b['name']} for b in BOOKS if b['translation']==version]},
         object_schema({'correct':{'type':'boolean'},'chosen_id':{'type':'string','enum':[p['id'] for p in refs]},'explanation':WORDS,'alternatives':{'type':'array','items':suggestion_schema()}}))
     chosen=next((p for p in refs if p['id']==out.get('chosen_id')),None)
-    if chosen is None or type(out.get('correct')) is not bool:raise Error('ИИ вернул неполный разбор.',502)
+    if chosen is None or type(out.get('correct')) is not bool:raise Error('Получен неполный разбор. Попробуй ещё раз.',502)
     alternatives=resolve_suggestions(out.get('alternatives',[]),version,exclude=[canonical(chosen)])
     # Ground each suggested explanation in the actual corpus text, rather than model memory.
     if alternatives:
@@ -535,7 +549,7 @@ def reflect2(data):
     text=required_text(data,'text',10);version=translation(data);scope=data.get('scope');verses=library2(data)
     if scope not in ('library','all'):raise Error('Неизвестная область поиска.')
     if scope=='library' and not verses:raise Error('Библиотека пуста. Добавь отрывки или выбери всю Библию.')
-    if len(verses)>300:raise Error('В этой версии разбор поддерживает до 300 отрывков.')
+    if len(verses)>300:raise Error(f'Разбор поддерживает до 300 отрывков. Сейчас {len(verses)}, превышение — {len(verses)-300}. Выбери всю Библию для поиска опоры.', uk=f'Розбір підтримує до 300 уривків. Зараз {len(verses)}, перевищення — {len(verses)-300}. Обери всю Біблію для пошуку опори.')
     if scope=='all':
         refs=ask('Предложи до двух библейских местописаний, которые помогают понять или описывают рассказанную ситуацию и могут подсказать действие. '
             'Отрывок может включать несколько соседних стихов. Идентификаторы книг строго из списка. Пока только ссылки, без толкования.',
@@ -551,7 +565,7 @@ def reflect2(data):
         'Дай одинаковый по смыслу разбор на русском и украинском. Не цитируй по памяти и не говори от имени Бога.',{'day':text,'passages':verses},schema,purpose='complex' if scope=='all' else 'general')
     allowed={p['id']:p for p in verses};result=[];seen=set()
     for s in out.get('suggestions',[])[:limit]:
-        if s.get('id') not in allowed:raise Error('ИИ предложил отрывок вне выбранного списка.',502)
+        if s.get('id') not in allowed:raise Error('Не удалось подобрать отрывок из выбранного списка. Повтори запрос.',502)
         if s['id'] in seen:continue
         seen.add(s['id']);result.append({'passage':allowed[s['id']],'reason':s['reason'],'action':s['action'],'shortAction':s.get('shortAction',s['action'])})
     return {'summary':out['summary'],'suggestions':result}
@@ -612,14 +626,14 @@ def prayer2(data):
         'Не меняй и не цитируй по памяти текст Писания. Используй все выданные id по одному разу.',
         {'request':text,'passages':passages},schema)
     reasons={r['id']:r['reason'] for r in out.get('reasons',[])}
-    if set(reasons)!=seen:raise Error('ИИ вернул неполный подбор отрывков.',502)
+    if set(reasons)!=seen:raise Error('Получен неполный подбор отрывков. Попробуй ещё раз.',502)
     empty={'ru':'','uk':''}
     return {'prayer':out['prayer'],'suggestions':[{'passage':p,'reason':reasons[p['id']],
         'action':empty,'shortAction':empty} for p in passages]}
 
 
 UK_ERRORS={
-'На сервере ещё не настроен ключ OpenAI.':'На сервері ще не налаштовано ключ OpenAI.',
+'Обработка запросов пока недоступна. Попробуй позже.':'Обробка запитів поки недоступна. Спробуй пізніше.',
 'Неверный ключ доступа к серверу.':'Неправильний ключ доступу до сервера.',
 'Не удалось распознать отрывок. Укажи книгу и стихи.':'Не вдалося розпізнати уривок. Укажи книгу й вірші.',
 'Сначала добавь отрывки в библиотеку.':'Спочатку додай уривки до бібліотеки.',
@@ -628,7 +642,7 @@ UK_ERRORS={
 'Ответ уже принят. Начни новую ситуацию.':'Відповідь уже прийнято. Почни нову ситуацію.',
 'Ответ ещё проверяется. Повтори запрос немного позже.':'Відповідь ще перевіряється. Повтори запит трохи згодом.',
 'Язык задания изменился. Начни новое.':'Мова завдання змінилася. Почни нове.',
-'OpenAI сейчас не ответил. Проверь настройки сервера или попробуй позже.':'OpenAI зараз не відповів. Перевір налаштування сервера або спробуй пізніше.',
+'Сервис не ответил вовремя. Попробуй ещё раз немного позже.':'Сервіс не відповів вчасно. Спробуй ще раз трохи згодом.',
 'Слишком много запросов. Подожди минуту.':'Забагато запитів. Зачекай хвилину.',
 'Такого стиха нет в выбранном переводе. Проверь ссылку.':'Такого вірша немає у вибраному перекладі. Перевір посилання.'}
 
@@ -636,6 +650,7 @@ UK_ERRORS={
 def application(environ,start_response):
     status=200
     data={}
+    error_uk=None
     try:
         path=environ.get('PATH_INFO','')
         if path=='/health' and environ.get('REQUEST_METHOD')=='GET':result={'ok':True}
@@ -662,10 +677,10 @@ def application(environ,start_response):
             elif path=='/v1/practice':result=make_practice(data,owner)
             elif path=='/v1/answer':result=answer(data,owner)
             else:raise Error('Неизвестный маршрут.',404)
-    except Error as exc:status=exc.status;result={'error':str(exc)}
+    except Error as exc:status=exc.status;result={'error':str(exc)};error_uk=exc.uk
     except Exception:status=500;result={'error':'Внутренняя ошибка сервера. Попробуй позже.'}
     if status>=400 and ((isinstance(data,dict) and data.get('translation')=='uk') or environ.get('HTTP_ACCEPT_LANGUAGE','').startswith('uk')):
-        result['error']=UK_ERRORS.get(result['error'],'Не вдалося виконати запит. Перевір дані та налаштування сервера й спробуй знову.')
+        result['error']=error_uk or UK_ERRORS.get(result['error'],'Не вдалося виконати запит. Перевір дані та налаштування сервера й спробуй знову.')
     body=json.dumps(result,ensure_ascii=False).encode()
     from http import HTTPStatus
     start_response(f'{status} {HTTPStatus(status).phrase}',[('Content-Type','application/json; charset=utf-8'),('Content-Length',str(len(body))),('Cache-Control','no-store')])

@@ -36,7 +36,7 @@ class SlovoTests(unittest.TestCase):
         status,_=self.request('/v1/import',{'text':'Мф 6:34'},auth=False);self.assertEqual(status,401)
     def test_missing_api_key_honest_error(self):
         status,result=self.request('/v1/reflect',{'text':'Сегодня я переживал из-за разговора.','scope':'all','translation':'ru'})
-        self.assertEqual(status,503);self.assertIn('ключ OpenAI',result['error'])
+        self.assertEqual(status,503);self.assertIn('пока недоступна',result['error']);self.assertNotIn('OpenAI',result['error'])
     def test_unknown_library_id_rejected(self):
         status,_=self.request('/v1/practice',{'ids':['unknown'],'translation':'ru'});self.assertEqual(status,400)
     def test_reflection_cannot_escape_library(self):
