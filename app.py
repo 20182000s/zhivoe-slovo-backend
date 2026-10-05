@@ -1,6 +1,7 @@
 """Slovo private prototype API. Exact quotations always come from the bundled corpus."""
 import base64
 import binascii
+from contextvars import ContextVar
 from cryptography.fernet import Fernet, InvalidToken
 import io
 from PIL import Image, UnidentifiedImageError
@@ -31,6 +32,35 @@ for book in BOOKS:
                 reference=f"{book['name']} {chapter}:{line['number']}", text=line['text'], translation=book['translation'])
 DB_PATH = os.environ.get('DATABASE_PATH', '/tmp/slovo-quizzes.sqlite3')
 DB_LOCK = threading.Lock()
+AI_DEADLINE = ContextVar('ai_deadline', default=None)
+
+def ai_remaining():
+    deadline=AI_DEADLINE.get()
+    return max(0,deadline-time.monotonic()) if deadline is not None else 75
+
+def ai_failure(model, purpose, started, kind, status=None, code=None):
+    # Only controlled operational fields. Upstream bodies can contain submitted
+    # text, so neither their message nor the request/credentials are logged.
+    print(json.dumps({'event':'ai_failure','model':model,'purpose':purpose,
+        'seconds':round(time.monotonic()-started,3),'kind':kind,
+        'http_status':status,'code':code}),flush=True)
+
+def upstream_error(status, code):
+    if status==429:
+        if code in {'insufficient_quota','credit_balance_exhausted','organization_spend_limit_exceeded',
+                    'project_spend_limit_exceeded','organization_usage_limit_exceeded'}:
+            return Error('Проверка ИИ недоступна: исчерпан баланс или лимит расходов OpenAI. Нужно проверить оплату сервера.',503,
+                uk='Перевірка ШІ недоступна: вичерпано баланс або ліміт витрат OpenAI. Потрібно перевірити оплату сервера.')
+        return Error('OpenAI временно ограничил частоту запросов. Подожди немного и проверь этот же ответ ещё раз.',429,
+            uk='OpenAI тимчасово обмежив частоту запитів. Зачекай трохи й перевір цю саму відповідь ще раз.')
+    if status in (401,403):
+        return Error('Сервер не получил доступ к OpenAI. Нужно проверить его ключ и настройки доступа.',503,
+            uk='Сервер не отримав доступу до OpenAI. Потрібно перевірити його ключ і налаштування доступу.')
+    if status>=500:
+        return Error('OpenAI временно недоступен. Твой ответ сохранён в поле — попробуй проверить его ещё раз.',503,
+            uk='OpenAI тимчасово недоступний. Твоя відповідь збережена в полі — спробуй перевірити її ще раз.')
+    return Error('OpenAI отклонил запрос сервера. Это ошибка обработки, а не неправильный ответ.',502,
+        uk='OpenAI відхилив запит сервера. Це помилка обробки, а не неправильна відповідь.')
 
 class Error(Exception):
     def __init__(self, message, status=400, uk=None):
@@ -128,9 +158,29 @@ def ask(task, data, schema, *, purpose='general', max_output_tokens=6000, image_
             {'type':'input_image','image_url':image_url,'detail':'high'}]}]
     req=urllib.request.Request('https://api.openai.com/v1/responses',data=json.dumps(payload).encode(),
         headers={'Authorization':'Bearer '+key,'Content-Type':'application/json'})
+    remaining=ai_remaining()
+    if remaining<1:
+        raise Error('Проверка занимает слишком много времени. Попробуй проверить этот же ответ ещё раз.',504,
+            uk='Перевірка триває надто довго. Спробуй перевірити цю саму відповідь ще раз.')
     try:
-        with urllib.request.urlopen(req,timeout=75) as response: body=json.load(response)
-    except (urllib.error.URLError,TimeoutError): raise Error('Сервис не ответил вовремя. Попробуй ещё раз немного позже.',502)
+        with urllib.request.urlopen(req,timeout=min(75,remaining)) as response: body=json.load(response)
+    except urllib.error.HTTPError as exc:
+        code=None
+        try:
+            detail=json.loads(exc.read(16384)).get('error',{})
+            candidate=detail.get('code') if isinstance(detail,dict) else None
+            if isinstance(candidate,str) and re.fullmatch(r'[a-z_]{1,80}',candidate):code=candidate
+        except (ValueError,TypeError,OSError):pass
+        ai_failure(selected,purpose,started,'http',exc.code,code)
+        raise upstream_error(exc.code,code) from None
+    except (urllib.error.URLError,TimeoutError) as exc:
+        timed_out=isinstance(exc,TimeoutError) or isinstance(getattr(exc,'reason',None),TimeoutError)
+        ai_failure(selected,purpose,started,'timeout' if timed_out else 'connection')
+        if timed_out:
+            raise Error('OpenAI не ответил вовремя. Попробуй проверить этот же ответ ещё раз.',504,
+                uk='OpenAI не відповів вчасно. Спробуй перевірити цю саму відповідь ще раз.') from None
+        raise Error('Серверу не удалось связаться с OpenAI. Попробуй ещё раз немного позже.',503,
+            uk='Серверу не вдалося зв’язатися з OpenAI. Спробуй ще раз трохи згодом.') from None
     # Operational measurements only: never log the user's story, answer or API key.
     usage=body.get('usage',{})
     print(json.dumps({'event':'ai_usage','model':selected,'purpose':purpose,
@@ -584,7 +634,7 @@ def evaluate_answer2(payload, text, library_ids):
                 'xp':0,'mastery':0,'evaluatedID':canonical(target)}
     # A single explicit prepared answer needs no paid evaluation. Explanations,
     # paraphrases and other references still receive the semantic review below.
-    accepted=payload.get('accepted_answers',[])
+    accepted=payload.get('accepted_answers') or [target]
     if accepted:
         chosen=exact_prepared_answer(text,version,accepted)
         if chosen:
@@ -613,13 +663,20 @@ def evaluate_answer2(payload, text, library_ids):
     if chosen is None or type(out.get('correct')) is not bool:raise Error('Получен неполный разбор. Попробуй ещё раз.',502)
     alternatives=resolve_suggestions(out.get('alternatives',[]),version,exclude=[canonical(chosen)])
     # Ground each suggested explanation in the actual corpus text, rather than model memory.
-    if alternatives:
-        ground=ask('Проверь, что точные дополнительные местописания подходят к ситуации. Верни только уместные id из предложенных, '
+    if alternatives and ai_remaining()>=15:
+        try:
+            ground=ask('Проверь, что точные дополнительные местописания подходят к ситуации. Верни только уместные id из предложенных, '
             'с коротким объяснением и практическим шагом на двух языках. Не цитируй по памяти.',
             {'situation':payload['situation'],'focus':payload.get('focus'),'passages':[s['passage'] for s in alternatives]},
             object_schema({'suggestions':{'type':'array','items':object_schema({'id':{'type':'string','enum':[s['passage']['id'] for s in alternatives]},'reason':WORDS,'action':WORDS})}}))
-        allowed={s['passage']['id']:s['passage'] for s in alternatives}
-        alternatives=[{'passage':allowed[s['id']],'reason':s['reason'],'action':s['action']} for s in ground.get('suggestions',[]) if s.get('id') in allowed]
+            allowed={s['passage']['id']:s['passage'] for s in alternatives}
+            alternatives=[{'passage':allowed[s['id']],'reason':s['reason'],'action':s['action']} for s in ground.get('suggestions',[]) if s.get('id') in allowed]
+        except Error as exc:
+            if exc.status<500 and exc.status!=429:raise
+            # Extra suggestions are optional. A finished assessment and its
+            # grounded reason/application must survive their upstream failure.
+            alternatives=[]
+    else:alternatives=[]
     displayed=chosen if out['correct'] else target
     alternatives=prepared_alternatives(payload,displayed,alternatives)
     result=grade2(out['correct'],chosen,target,out['explanation'],alternatives,library_ids)
@@ -776,6 +833,7 @@ def application(environ,start_response):
     status=200
     data={}
     error_uk=None
+    deadline_token=AI_DEADLINE.set(time.monotonic()+100 if environ.get('PATH_INFO')=='/v2/answer' else None)
     try:
         path=environ.get('PATH_INFO','')
         if path=='/health' and environ.get('REQUEST_METHOD')=='GET':result={'ok':True}
@@ -805,6 +863,7 @@ def application(environ,start_response):
             else:raise Error('Неизвестный маршрут.',404)
     except Error as exc:status=exc.status;result={'error':str(exc)};error_uk=exc.uk
     except Exception:status=500;result={'error':'Внутренняя ошибка сервера. Попробуй позже.'}
+    finally:AI_DEADLINE.reset(deadline_token)
     if status>=400 and ((isinstance(data,dict) and data.get('translation')=='uk') or environ.get('HTTP_ACCEPT_LANGUAGE','').startswith('uk')):
         result['error']=error_uk or UK_ERRORS.get(result['error'],'Не вдалося виконати запит. Перевір дані та налаштування сервера й спробуй знову.')
     body=json.dumps(result,ensure_ascii=False).encode()
