@@ -3,18 +3,12 @@ from unittest.mock import patch
 import app
 
 class ModelRoutingTests(unittest.TestCase):
-    def test_disabled_preserves_deployed_model(self):
-        with patch.dict(os.environ, {'OPENAI_MODEL':'existing-model'}, clear=True):
-            for role in ('general','reference','complex'):
-                self.assertEqual(app.model_for(role),'existing-model')
-
-    def test_roles_and_overrides(self):
-        with patch.dict(os.environ, {'OPENAI_ROUTING_ENABLED':'true'}, clear=True):
-            self.assertEqual(app.model_for(),'gpt-6-sol')
-            self.assertEqual(app.model_for('reference'),'gpt-6-sol')
-            self.assertEqual(app.model_for('complex'),'gpt-6-astra')
-            with patch.dict(os.environ, {'OPENAI_REFERENCE_MODEL':'gpt-6-luna'}):
-                self.assertEqual(app.model_for('reference'),'gpt-6-luna')
+    def test_all_workloads_use_the_approved_model_despite_old_routing_variables(self):
+        for env in ({}, {'OPENAI_MODEL':'gpt-6-astra'},
+                    {'OPENAI_ROUTING_ENABLED':'true','OPENAI_REFERENCE_MODEL':'gpt-6-luna'}):
+            with patch.dict(os.environ,env,clear=True):
+                for purpose in ('general','reference','complex'):
+                    self.assertEqual(app.model_for(purpose),'gpt-6.1-sol')
 
     def test_usage_is_measured_without_private_content(self):
         response={'status':'completed','output':[{'content':[{'type':'output_text','text':'{"ok":true}'}]}],
@@ -25,8 +19,8 @@ class ModelRoutingTests(unittest.TestCase):
             call.return_value.__enter__.return_value=io.StringIO(json.dumps(response))
             self.assertEqual(app.ask('PRIVATE INSTRUCTION',{'day':'PRIVATE STORY'},app.object_schema({'ok':{'type':'boolean'}})),{'ok':True})
             request=json.loads(call.call_args.args[0].data)
-            self.assertEqual(request['model'],'gpt-6-sol')
-            self.assertFalse(request['store'])
+            self.assertEqual(request['model'],'gpt-6.1-sol')
+            self.assertFalse(request['store']);self.assertEqual(request['reasoning'],{'effort':'medium'})
         output=stream.getvalue()
         self.assertNotIn('PRIVATE',output);self.assertNotIn('TEST-KEY',output)
         self.assertEqual(json.loads(output)['reasoning_tokens'],8)

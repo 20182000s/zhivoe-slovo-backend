@@ -57,7 +57,7 @@ class PreparedPracticeTests(unittest.TestCase):
     def test_attempt_hides_answers_and_snapshot_keeps_full_bank(self):
         with patch.object(app,'ask',side_effect=AssertionError('No paid calls')):
             quiz=app.practice2({'scope':'all'},'owner')
-        self.assertEqual({'id','situation'},set(quiz))
+        self.assertEqual({'id','situation','focus','recovery'},set(quiz))
         with app.db() as db:
             payload=json.loads(db.execute('SELECT payload FROM quizzes WHERE id=?',(quiz['id'],)).fetchone()[0])
         self.assertEqual(2,len(payload['accepted_answers']))

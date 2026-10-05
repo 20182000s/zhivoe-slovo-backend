@@ -1,6 +1,7 @@
 """Slovo private prototype API. Exact quotations always come from the bundled corpus."""
 import base64
 import binascii
+from cryptography.fernet import Fernet, InvalidToken
 import io
 from PIL import Image, UnidentifiedImageError
 import hashlib
@@ -41,6 +42,7 @@ def db():
     connection = sqlite3.connect(DB_PATH, timeout=20)
     connection.execute('CREATE TABLE IF NOT EXISTS quizzes (id TEXT PRIMARY KEY, owner TEXT, created REAL, payload TEXT, answer_id TEXT, result TEXT)')
     connection.execute('CREATE TABLE IF NOT EXISTS rate_limits (owner TEXT, minute INTEGER, count INTEGER, PRIMARY KEY(owner,minute))')
+    connection.execute('CREATE TABLE IF NOT EXISTS practice_shown (owner TEXT, language TEXT, passage TEXT, count INTEGER, PRIMARY KEY(owner,language,passage))')
     return connection
 
 def normalize(value):
@@ -100,15 +102,14 @@ BASE_INSTRUCTIONS = '''Ты помощник приложения для изу�
 Не говори от имени Бога и не выдавай толкование за единственно возможное. Учитывай контекст стихов.
 В пользовательских объяснениях называй библейский фрагмент только «местописание» по-русски или «місце Писання» по-украински.
 Не обвиняй человека в несчастьях и не обещай гарантированного исцеления. Предлагай конкретный, бережный шаг.
+Если в ситуации несколько людей, явно называй, чей поступок или переживание объясняешь и кому предлагаешь действие. Не меняй эту позицию между объяснением и применением.
+Не предлагай один и тот же фрагмент повторно в расширенном или сокращённом диапазоне стихов.
 Возвращай только запрошенную структуру. Цитаты НЕ генерируй: сервер сам возьмёт точный текст из базы.'''
 
 def model_for(purpose='general'):
-    # Enable only after comparing the candidate models on the RU/UK evaluation set.
-    legacy=os.environ.get('OPENAI_MODEL','gpt-6-astra')
-    if os.environ.get('OPENAI_ROUTING_ENABLED','false').lower()!='true':return legacy
-    if purpose=='complex':return os.environ.get('OPENAI_COMPLEX_MODEL','gpt-6-astra')
-    if purpose=='reference':return os.environ.get('OPENAI_REFERENCE_MODEL','gpt-6-sol')
-    return os.environ.get('OPENAI_GENERAL_MODEL','gpt-6-sol')
+    # One explicitly approved model for every workload, including photo import.
+    # Old Render routing variables cannot silently select an earlier model.
+    return 'gpt-6.1-sol'
 
 def ask(task, data, schema, *, purpose='general', max_output_tokens=6000, image_url=None):
     key=os.environ.get('OPENAI_API_KEY','')
@@ -117,6 +118,7 @@ def ask(task, data, schema, *, purpose='general', max_output_tokens=6000, image_
     selected=model_for(purpose)
     started=time.monotonic()
     payload={'model':selected,'store':False,
+             'reasoning':{'effort':'medium'},
              'instructions':BASE_INSTRUCTIONS+'\n'+task,
              'input':json.dumps(data,ensure_ascii=False),
              'text':{'format':{'type':'json_schema','name':'slovo_result','strict':True,'schema':schema}},
@@ -197,7 +199,7 @@ def reflect(data):
             if s.get('id') not in allowed:raise Error('Не удалось определить ссылку на местописание. Повтори запрос.',502)
             suggestions.append({'passage':PASSAGES[s['id']],'reason':required_text(s,'reason'),'action':required_text(s,'action')})
         out['summary']=required_text(grounded,'summary')
-    return {'summary':out['summary'],'suggestions':suggestions}
+    return {'summary':out['summary'],'suggestions':distinct_suggestions(suggestions)}
 
 def make_practice(data,owner):
     verses=library(data)
@@ -431,6 +433,40 @@ def ready_payload(exercise, language):
             'accepted_answers':answers,'reason':exercise.get('reason',{
                 'ru':'Это местописание подходит к ситуации.','uk':'Це місце Писання відповідає ситуації.'})}
 
+def quiz_cipher():
+    secret=os.environ.get('API_TOKEN','')
+    if len(secret)<24:return None
+    key=hmac.new(secret.encode(),b'slovo-quiz-recovery-v1',hashlib.sha256).digest()
+    return Fernet(base64.urlsafe_b64encode(key))
+
+def quiz_recovery(ident, owner, payload):
+    cipher=quiz_cipher()
+    if cipher is None:return None
+    return cipher.encrypt(json.dumps({'id':ident,'owner':owner,'payload':payload},ensure_ascii=False).encode()).decode()
+
+def recover_quiz(token, ident, owner, version):
+    cipher=quiz_cipher()
+    if not isinstance(token,str) or not 0<len(token)<=120000 or cipher is None:
+        raise Error('Упражнение не найдено. Начни новую ситуацию.',404,uk='Вправу не знайдено. Почни нову ситуацію.')
+    try:
+        recovered=json.loads(cipher.decrypt(token.encode(),ttl=7*86400))
+        payload=recovered['payload']
+        if recovered['id']!=ident or recovered['owner']!=owner or payload['translation']!=version or payload['version']!=2:
+            raise ValueError()
+    except (InvalidToken,ValueError,KeyError,TypeError):
+        raise Error('Упражнение устарело. Начни новую ситуацию.',410,uk='Вправа застаріла. Почни нову ситуацію.')
+    return payload
+
+def balanced_target(verses, owner, version, requested=None):
+    if requested:
+        match=next((p for p in verses if p['id']==requested),None)
+        if match is None:raise Error('Выбранное местописание отсутствует в библиотеке.')
+        return match
+    with DB_LOCK,db() as connection:
+        counts=dict(connection.execute('SELECT passage,count FROM practice_shown WHERE owner=? AND language=?',(owner,version)))
+    minimum=min(counts.get(canonical(p),0) for p in verses)
+    return random.choice([p for p in verses if counts.get(canonical(p),0)==minimum])
+
 def practice2(data, owner):
     version=translation(data);verses=library2(data)
     if data.get('scope','library')=='all':
@@ -448,21 +484,26 @@ def practice2(data, owner):
         payload=ready_payload(random.choice(exercises),version)
     elif data.get('scope','library')=='library':
         if not verses:raise Error('Сначала добавь местописания в библиотеку.')
-        target=random.choice(verses)
+        target=balanced_target(verses,owner,version,data.get('target_id'))
         out=ask('Создай реалистичную повседневную ситуацию, для которой уместно данное местописание. '
             'Не называй ссылку, не цитируй местописание, не предлагай варианты ответа. Человек вспомнит местописание сам. '
             'Ситуация может показывать ошибку, хороший поступок или переживание без проступка. '
+            'Поле focus — короткое обращение к пользователю, явно называющее героя и задачу, например: «Помоги Андрею понять свой гнев и выбрать следующий шаг». '
+            'Если героев несколько, выбери одного: оцениваются его чувства или поступок, а не всех людей сразу. focus не раскрывает ссылку и не подсказывает ответ. '
             'Также объясни, почему именно это местописание подходит (reason), и предложи конкретное бережное действие или фразу (application). '
+            'В reason назови героя и конкретный поступок; в application явно укажи, кому предназначен шаг. Сохраняй позицию из focus. '
             'Не считай любой случай ошибкой человека. Верни все поля на русском и украинском.',
-            {'target':target},object_schema({'situation':WORDS,'reason':WORDS,'application':WORDS}))
+            {'target':target},object_schema({'situation':WORDS,'focus':WORDS,'reason':WORDS,'application':WORDS}))
         payload={'version':2,'translation':version,'target':target,'situation':out['situation'],
-                 'reason':out.get('reason'),'application':out.get('application')}
+                 'focus':out.get('focus'),'reason':out.get('reason'),'application':out.get('application')}
     else:raise Error('Неизвестная область практики.')
     ident=secrets.token_urlsafe(24)
     with DB_LOCK,db() as connection:
         connection.execute('DELETE FROM quizzes WHERE created < ?',(time.time()-86400,))
         connection.execute('INSERT INTO quizzes VALUES (?,?,?,?,NULL,NULL)',(ident,owner,time.time(),json.dumps(payload,ensure_ascii=False)))
-    return {'id':ident,'situation':payload['situation']}
+        if data.get('scope','library')=='library':
+            connection.execute('INSERT INTO practice_shown VALUES (?,?,?,1) ON CONFLICT(owner,language,passage) DO UPDATE SET count=count+1',(owner,version,canonical(target)))
+    return {'id':ident,'situation':payload['situation'],'focus':payload.get('focus'),'recovery':quiz_recovery(ident,owner,payload)}
 
 def suggestion_schema():
     return object_schema({'reference':REF2,'reason':WORDS,'action':WORDS})
@@ -478,12 +519,19 @@ def resolve_suggestions(items,version,exclude=None):
 def prepared_alternatives(payload, displayed, suggestions=None):
     prepared=[{'passage':p,'reason':practice_reason(payload,p),'action':{'ru':'','uk':''}}
               for p in payload.get('accepted_answers',[])]
-    seen={canonical(displayed)};result=[]
-    for item in prepared+list(suggestions or []):
-        key=canonical(item['passage'])
-        if key in seen:continue
-        seen.add(key);result.append(item)
-    return result[:2]
+    return distinct_suggestions(prepared+list(suggestions or []),[displayed])[:2]
+
+def same_fragment(left, right):
+    lhs=set(canonical(left).split('~'));rhs=set(canonical(right).split('~'))
+    return lhs.issubset(rhs) or rhs.issubset(lhs)
+
+def distinct_suggestions(items, excluded=()):
+    seen=[p for p in excluded if p];result=[]
+    for item in items:
+        passage=item['passage']
+        if any(same_fragment(passage,p) for p in seen):continue
+        seen.append(passage);result.append(item)
+    return result
 
 def practice_reason(payload, passage):
     return payload.get('answer_reasons',{}).get(canonical(passage)) or payload.get('reason') or {
@@ -523,7 +571,7 @@ def evaluate2(payload, text, library_ids):
         key=canonical(item['passage'])
         if key not in seen:
             seen.add(key);suggestions.append(item)
-    result['alternatives']=suggestions[:2]
+    result['alternatives']=distinct_suggestions(suggestions,[shown])[:2]
     if 'reason' not in result:result['reason']=practice_reason(payload,shown)
     if 'application' not in result:result['application']=payload.get('application')
     return result
@@ -553,10 +601,11 @@ def evaluate_answer2(payload, text, library_ids):
         'explanation кратко оценивает ответ человека. reason отдельно связывает конкретную деталь ситуации со смыслом показываемого местописания. '
         'При correct=true показывается chosen_id, при correct=false — target: reason должен объяснять именно показываемое местописание. '
         'application предлагает конкретное действие или фразу для ситуации. Для хорошего поступка поддержи его продолжение; '
+        'Если передан focus, оценивай именно указанного героя и его задачу. В reason и application называй героя, не переключайся на другого участника. '
         'для переживания предложи опору, не выдумывая вину. Не обещай гарантированных результатов и не требуй терпеть насилие. '
         'Все объяснения и применение на русском и украинском. Не генерируй цитаты.',
         {'situation':payload['situation'],'answer_text':text,'answer_passages':refs,'target':target,
-         'prepared_answers':accepted,'prepared_reason':payload.get('reason'),
+         'prepared_answers':accepted,'prepared_reason':payload.get('reason'),'focus':payload.get('focus'),
          'books':[{'id':b['id'],'name':b['name']} for b in BOOKS if b['translation']==version]},
         object_schema({'correct':{'type':'boolean'},'chosen_id':{'type':'string','enum':[p['id'] for p in refs]},
                        'explanation':WORDS,'reason':WORDS,'application':WORDS,'alternatives':{'type':'array','items':suggestion_schema()}}))
@@ -567,7 +616,7 @@ def evaluate_answer2(payload, text, library_ids):
     if alternatives:
         ground=ask('Проверь, что точные дополнительные местописания подходят к ситуации. Верни только уместные id из предложенных, '
             'с коротким объяснением и практическим шагом на двух языках. Не цитируй по памяти.',
-            {'situation':payload['situation'],'passages':[s['passage'] for s in alternatives]},
+            {'situation':payload['situation'],'focus':payload.get('focus'),'passages':[s['passage'] for s in alternatives]},
             object_schema({'suggestions':{'type':'array','items':object_schema({'id':{'type':'string','enum':[s['passage']['id'] for s in alternatives]},'reason':WORDS,'action':WORDS})}}))
         allowed={s['passage']['id']:s['passage'] for s in alternatives}
         alternatives=[{'passage':allowed[s['id']],'reason':s['reason'],'action':s['action']} for s in ground.get('suggestions',[]) if s.get('id') in allowed]
@@ -597,13 +646,15 @@ def answer2(data, owner):
         row=connection.execute('SELECT owner,created,payload,answer_id,result FROM quizzes WHERE id=?',(ident,)).fetchone()
         if not row:
             exercise=next((e for e in CATALOG['exercises'] if e['id']==data.get('exercise_id')),None)
-            if exercise is None:raise Error('Упражнение не найдено. Начни новое.',404)
-            payload=ready_payload(exercise,version)
+            payload=ready_payload(exercise,version) if exercise else recover_quiz(data.get('recovery'),ident,owner,version)
             connection.execute('INSERT INTO quizzes VALUES (?,?,?,?,NULL,NULL)',(ident,owner,time.time(),json.dumps(payload,ensure_ascii=False)))
         else:
             if row[0]!=owner:raise Error('Упражнение не найдено.',404)
-            if row[1]<time.time()-86400:raise Error('Упражнение устарело. Начни новое.',410)
-            payload=json.loads(row[2])
+            if row[1]<time.time()-86400 and data.get('recovery'):
+                payload=recover_quiz(data['recovery'],ident,owner,version)
+                connection.execute('UPDATE quizzes SET created=? WHERE id=?',(time.time(),ident))
+            elif row[1]<time.time()-86400:raise Error('Упражнение устарело. Начни новую ситуацию.',410,uk='Вправа застаріла. Почни нову ситуацію.')
+            else:payload=json.loads(row[2])
             if payload.get('version')!=2:raise Error('Обнови упражнение.',409)
             if payload['translation']!=version:raise Error('Язык задания изменился. Начни новое.',409)
             if row[3]:
@@ -641,7 +692,7 @@ def reflect2(data):
         if s.get('id') not in allowed:raise Error('Не удалось подобрать местописание из выбранного списка. Повтори запрос.',502)
         if s['id'] in seen:continue
         seen.add(s['id']);result.append({'passage':allowed[s['id']],'reason':s['reason'],'action':s['action'],'shortAction':s.get('shortAction',s['action'])})
-    return {'summary':out['summary'],'suggestions':result}
+    return {'summary':out['summary'],'suggestions':distinct_suggestions(result)}
 
 def source2(data):
     version=translation(data)
@@ -688,7 +739,8 @@ def prayer2(data):
     passages=[];seen=set()
     for r in refs.get('references',[])[:3]:
         p=grouped(resolve(r.get('book'),r.get('chapter'),r.get('first'),r.get('last'),version))
-        if p['id'] not in seen:seen.add(p['id']);passages.append(p)
+        if p['id'] not in seen and not any(same_fragment(p,existing) for existing in passages):
+            seen.add(p['id']);passages.append(p)
     if len(passages)<2:raise Error('Не удалось подобрать разные местописания. Попробуй ещё раз.',502)
     schema=object_schema({'prayer':WORDS,'reasons':{'type':'array','minItems':2,'maxItems':3,
         'items':object_schema({'id':{'type':'string','enum':[p['id'] for p in passages]},'reason':WORDS})}})

@@ -65,7 +65,7 @@ class PracticeGuidanceTests(unittest.TestCase):
         p=self.exercise['answers'][0]['ru']
         with patch.object(app,'ask',return_value={'situation':self.exercise['situation'],'reason':self.reasons[0],'application':self.application}) as ask:
             quiz=app.practice2({'translation':'ru','scope':'library','ids':[p['id']]},'owner')
-        self.assertEqual({'situation','reason','application'},set(ask.call_args.args[2]['required']))
+        self.assertEqual({'situation','focus','reason','application'},set(ask.call_args.args[2]['required']))
         self.assertNotIn('reason',quiz);self.assertNotIn('application',quiz)
         with patch.object(app,'ask',side_effect=AssertionError('Guidance is already stored')):
             result=app.answer2(dict(quiz_id=quiz['id'],translation='ru',answer_text='',library_ids=[]),'owner')
