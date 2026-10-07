@@ -364,7 +364,9 @@ def grouped(passages):
 def read_passage(ident):
     if not isinstance(ident,str): raise Error('Неизвестное местописание.')
     ids = ident.split('~')
-    if not 1 <= len(ids) <= 100 or any(i not in PASSAGES for i in ids): raise Error('Неизвестное местописание.')
+    # The app can extend a saved fragment across chapters. Its length must not
+    # inherit the unrelated limit on the number of imported references.
+    if not 1 <= len(ids) <= 5000 or any(i not in PASSAGES for i in ids): raise Error('Неизвестное местописание.')
     values = [PASSAGES[i] for i in ids]
     if len({p['translation'] for p in values}) != 1: raise Error('В одном местописании должен быть один перевод.')
     return grouped(values)
@@ -496,7 +498,7 @@ def quiz_recovery(ident, owner, payload):
 
 def recover_quiz(token, ident, owner, version):
     cipher=quiz_cipher()
-    if not isinstance(token,str) or not 0<len(token)<=120000 or cipher is None:
+    if not isinstance(token,str) or not 0<len(token)<=1024*1024 or cipher is None:
         raise Error('Упражнение не найдено. Начни новую ситуацию.',404,uk='Вправу не знайдено. Почни нову ситуацію.')
     try:
         recovered=json.loads(cipher.decrypt(token.encode(),ttl=7*86400))
@@ -753,7 +755,7 @@ def reflect2(data):
 
 def source2(data):
     version=translation(data)
-    target=read_passage(required_text(data,'passage_id',1,4000))
+    target=read_passage(required_text(data,'passage_id',1,120000))
     if target['translation']!=version:raise Error('Язык задания изменился. Начни новое.',409)
     answer=required_text(data,'answer',1,1000)
     # AI interprets only the submitted reference, without seeing the expected answer.
