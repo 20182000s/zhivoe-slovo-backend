@@ -113,6 +113,19 @@ def local_import(text, version):
     result = []
     for chunk in re.split(r'[;\n]+',text):
         if not chunk.strip(): continue
+        cross=re.fullmatch(r'\s*(.+?)\s+(\d+)\s*[:.,]\s*(\d+)\s*[-–—]\s*(\d+)\s*[:.,]\s*(\d+)\s*',chunk)
+        if cross:
+            name,c,first,end,last=cross.groups()
+            book=next((b for b in BOOKS if b['translation']==version and normalize(name) in [normalize(a) for a in b['aliases']]),None)
+            if not book:return []
+            c,first,end,last=map(int,(c,first,end,last))
+            if c<1 or end<c or end>len(book['chapters']) or (end==c and last<first):raise Error('Проверь начало и конец местописания.')
+            resolve(book['id'],c,first,first,version);resolve(book['id'],end,last,last,version)
+            for chapter in range(c,end+1):
+                for line in book['chapters'][chapter-1]:
+                    if (chapter!=c or line['number']>=first) and (chapter!=end or line['number']<=last):
+                        result.append(PASSAGES[f'{version}|{book["id"]}|{chapter}|{line["number"]}'])
+            continue
         match = re.fullmatch(r'\s*(.+?)\s+(\d+)\s*[:.,]\s*(\d+)(?:\s*[-–—]\s*(\d+))?\s*',chunk)
         if not match: return []
         name,c,v,last=match.groups()
@@ -357,8 +370,23 @@ def grouped(passages):
     if not passages: raise Error('Не удалось найти местописание.')
     passages = list({p['id']: p for p in passages}.values())
     first = passages[0]
-    contiguous = all(p['book'] == first['book'] and p['chapter'] == first['chapter'] and p['verse'] == first['verse'] + i for i,p in enumerate(passages))
-    reference = first['reference'] + (f"–{passages[-1]['verse']}" if len(passages)>1 else '') if contiguous else '; '.join(p['reference'] for p in passages)
+    runs=[]
+    for p in passages:
+        previous=runs[-1][-1] if runs else None
+        adjacent=False
+        if previous and previous['book']==p['book'] and previous['translation']==p['translation']:
+            if previous['chapter']==p['chapter']:adjacent=previous['verse']+1==p['verse']
+            elif p['chapter']==previous['chapter']+1:
+                book=next(b for b in BOOKS if b['id']==p['book'] and b['translation']==p['translation'])
+                adjacent=book['chapters'][previous['chapter']-1][-1]['number']==previous['verse'] and book['chapters'][p['chapter']-1][0]['number']==p['verse']
+        if adjacent:runs[-1].append(p)
+        else:runs.append([p])
+    labels=[]
+    for run in runs:
+        start,end=run[0],run[-1]
+        suffix=(str(end['verse']) if start['chapter']==end['chapter'] else f'{end["chapter"]}:{end["verse"]}')
+        labels.append(start['reference']+('–'+suffix if len(run)>1 else ''))
+    reference='; '.join(labels)
     return dict(first, id='~'.join(p['id'] for p in passages), reference=reference, text='\n'.join(p['text'] for p in passages))
 
 def read_passage(ident):
@@ -400,13 +428,16 @@ def inline_import2(text, version):
         for alias in book['aliases']:
             if len(normalize(alias))>=3:aliases.append((alias,book['id']))
     aliases.sort(key=lambda pair:len(pair[0]),reverse=True)
-    out=[];seen=set()
+    out=[];seen=set();occupied=[]
     for alias,book_id in aliases:
         escaped=re.escape(alias).replace(r'\ ',r'\s+')
-        pattern=rf'(?<!\w){escaped}(?!\w)\s+(\d+)\s*[:.,]\s*(\d+)(?:\s*[-–—]\s*(\d+))?'
+        pattern=rf'(?<!\w){escaped}(?!\w)\s+(\d+)\s*[:.,]\s*(\d+)(?:\s*[-–—]\s*(?:\d+\s*[:.,]\s*)?\d+)?'
         for match in re.finditer(pattern,text,flags=re.IGNORECASE):
-            chapter,first,last=(int(value) if value else None for value in match.groups())
-            passage=grouped(resolve(book_id,chapter,first,last or first,version))
+            if any(match.start()<end and match.end()>start for start,end in occupied):continue
+            found=local_import(match.group(),version)
+            if not found:continue
+            passage=grouped(found)
+            occupied.append(match.span())
             if passage['id'] not in seen:
                 seen.add(passage['id']);out.append((match.start(),passage))
     return [passage for _,passage in sorted(out,key=lambda pair:pair[0])]
@@ -597,7 +628,7 @@ def exact_prepared_answer(text, version, accepted):
     if match:return match
     # local_import uses a full-string reference grammar and exact book aliases.
     # Require one reference expression, so lists and explanations go to review.
-    if not re.fullmatch(r'\s*[^;\n]+?\s+\d+\s*[:.,]\s*\d+(?:\s*[-–—]\s*\d+)?\s*',text):return None
+    if not re.fullmatch(r'\s*[^;\n]+?\s+\d+\s*[:.,]\s*\d+(?:\s*[-–—]\s*(?:\d+\s*[:.,]\s*)?\d+)?\s*',text):return None
     direct=local_import2(text,version)
     if len(direct)!=1:return None
     return next((p for p in accepted if p['id']==direct[0]['id']),None)
