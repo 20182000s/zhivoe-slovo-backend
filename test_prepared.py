@@ -38,6 +38,7 @@ class PreparedPracticeTests(unittest.TestCase):
                     result=self.answer(self.attempt(language),passage['reference'],language,
                                        library_ids=[passage['id']])
                     self.assertTrue(result['correct'])
+                    self.assertEqual('catalog',result['gradingOrigin'])
                     self.assertEqual(passage,result['passage'])
                     self.assertEqual((5,2),(result['xp'],result['mastery']))
                     self.assertEqual(1,len(result['alternatives']))

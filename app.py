@@ -664,7 +664,7 @@ def evaluate_answer2(payload, text, library_ids):
     if not text.strip():
         explanation=payload.get('reason') or {'ru':'Это одно из подходящих местописаний. Сравни его смысл с ситуацией.','uk':'Це одне з доречних місць Писання. Порівняй його зміст із ситуацією.'}
         return {'correct':False,'explanation':explanation,'passage':target,'alternatives':prepared_alternatives(payload,target),
-                'xp':0,'mastery':0,'evaluatedID':canonical(target)}
+                'xp':0,'mastery':0,'evaluatedID':canonical(target),'gradingOrigin':'catalog'}
     # A single explicit prepared answer needs no paid evaluation. Explanations,
     # paraphrases and other references still receive the semantic review below.
     accepted=payload.get('accepted_answers') or [target]
@@ -672,7 +672,9 @@ def evaluate_answer2(payload, text, library_ids):
         chosen=exact_prepared_answer(text,version,accepted)
         if chosen:
             alternatives=prepared_alternatives(payload,chosen)
-            return grade2(True,chosen,target,practice_reason(payload,chosen),alternatives,library_ids)
+            result=grade2(True,chosen,target,practice_reason(payload,chosen),alternatives,library_ids)
+            result['gradingOrigin']='catalog'
+            return result
     refs=parse_references(text,version)
     if not refs:
         return {'correct':False,'explanation':{'ru':'Не удалось узнать местописание в ответе. Ниже — один из подходящих ответов: сравни его смысл с ситуацией.','uk':'Не вдалося впізнати місце Писання у відповіді. Нижче — одна з доречних відповідей: порівняй її зміст із ситуацією.'},'passage':target,'alternatives':prepared_alternatives(payload,target),'xp':0,'mastery':0,'evaluatedID':canonical(target)}
@@ -716,6 +718,7 @@ def evaluate_answer2(payload, text, library_ids):
     authored=payload.get('answer_reasons',{}).get(canonical(displayed))
     result['reason']=authored or out.get('reason') or practice_reason(payload,displayed)
     result['application']=payload.get('application') if authored else out.get('application')
+    result['gradingOrigin']='ai'
     return result
 
 def grade2(correct, chosen, target, explanation, alternatives, library_ids):

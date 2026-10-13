@@ -44,6 +44,7 @@ class PracticeGuidanceTests(unittest.TestCase):
                                                'reason':reason,'application':action,'alternatives':[]}) as ask:
             result=self.answer(p['reference'])
         self.assertTrue(result['correct']);self.assertEqual(p,result['passage'])
+        self.assertEqual('ai',result['gradingOrigin'])
         self.assertEqual(reason,result['reason']);self.assertEqual(action,result['application'])
         self.assertEqual(1,ask.call_count)
         self.assertEqual(p,ask.call_args.args[1]['answer_passages'][0])
