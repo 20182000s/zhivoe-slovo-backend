@@ -763,17 +763,35 @@ def answer2(data, owner):
     return result
 
 def reflect2(data):
-    text=required_text(data,'text',10);version=translation(data);scope=data.get('scope');verses=library2(data)
+    text=required_text(data,'text',10);version=translation(data);scope=data.get('scope')
     if scope not in ('library','all'):raise Error('Неизвестная область поиска.')
+    excluded_ids=data.get('exclude_ids',[])
+    if not isinstance(excluded_ids,list) or len(excluded_ids)>100 or any(not isinstance(i,str) for i in excluded_ids):
+        raise Error('Список прежних опор должен содержать не больше 100 местописаний.',uk='Список попередніх опор має містити не більше 100 місць Писання.')
+    if scope!='all' and excluded_ids:raise Error('Следующая опора доступна при поиске во всей Библии.',uk='Наступна опора доступна під час пошуку в усій Біблії.')
+    excluded=[convert(read_passage(i),version) for i in excluded_ids]
+    excluded_atoms=set(a for p in excluded for a in canonical(p).split('~'))
+    verses=library2(data) if scope=='library' else []
+    limit=1 if scope=='library' or excluded else 2
     if scope=='library' and not verses:raise Error('Библиотека пуста. Добавь местописания или выбери всю Библию.')
     if len(verses)>300:raise Error(f'Разбор поддерживает до 300 местописаний. Сейчас {len(verses)}, превышение — {len(verses)-300}. Выбери всю Библию для поиска опоры.', uk=f'Розбір підтримує до 300 місць Писання. Зараз {len(verses)}, перевищення — {len(verses)-300}. Обери всю Біблію для пошуку опори.')
     if scope=='all':
-        refs=ask('Предложи до двух библейских местописаний, которые помогают понять или описывают рассказанную ситуацию и могут подсказать действие. '
+        candidates=3 if excluded else 2
+        refs=ask(f'Предложи до {candidates} библейских местописаний, которые помогают понять или описывают рассказанную ситуацию и могут подсказать действие. '
+            'Если переданы rejected, прежние опоры не устроили человека. Найди другой уместный аспект ситуации. '
+            'Не предлагай прежние стихи, их части или пересекающиеся диапазоны. '
             'Местописание может включать несколько соседних стихов. Идентификаторы книг строго из списка. Пока только ссылки, без толкования.',
-            {'day':text,'books':[{'id':b['id'],'name':b['name']} for b in BOOKS if b['translation']==version]},object_schema({'references':{'type':'array','items':REF2}}),purpose='complex')
-        verses=[grouped(resolve(r.get('book'),r.get('chapter'),r.get('first'),r.get('last'),version)) for r in refs.get('references',[])[:2]]
-    if not verses:return {'summary':{'ru':'Подходящие местописания не найдены. Попробуй подробнее описать ситуацию.','uk':'Доречних місць Писання не знайдено. Спробуй докладніше описати ситуацію.'},'suggestions':[]}
-    limit=1 if scope=='library' else 2
+            {'day':text,'rejected':[{'id':p['id'],'reference':p['reference']} for p in excluded],
+             'books':[{'id':b['id'],'name':b['name']} for b in BOOKS if b['translation']==version]},
+            object_schema({'references':{'type':'array','maxItems':candidates,'items':REF2}}),purpose='complex')
+        for r in refs.get('references',[])[:candidates]:
+            p=grouped(resolve(r.get('book'),r.get('chapter'),r.get('first'),r.get('last'),version))
+            atoms=set(canonical(p).split('~'))
+            if atoms.intersection(excluded_atoms) or any(atoms.intersection(canonical(v).split('~')) for v in verses):continue
+            verses.append(p)
+            if len(verses)>=limit:break
+    if not verses:return {'summary':{'ru':'Новая подходящая опора не найдена. Попробуй уточнить ситуацию.' if excluded else 'Подходящие местописания не найдены. Попробуй подробнее описать ситуацию.',
+        'uk':'Нова доречна опора не знайдена. Спробуй уточнити ситуацію.' if excluded else 'Доречних місць Писання не знайдено. Спробуй докладніше описати ситуацію.'},'suggestions':[]}
     schema=object_schema({'summary':WORDS,'suggestions':{'type':'array','maxItems':limit,'items':object_schema({'id':{'type':'string','enum':[p['id'] for p in verses]},'reason':WORDS,'action':WORDS,'shortAction':WORDS})}})
     out=ask(f'Осмысли ситуацию. Выбери до {limit} подходящих местописаний СТРОГО из выданных. '
         'Дай объяснение связи и конкретное действие, опираясь на точные тексты и их контекст. Если ничего не подходит, suggestions пустой. '
