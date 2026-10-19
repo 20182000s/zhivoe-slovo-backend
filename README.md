@@ -30,3 +30,9 @@ Library practice accepts `target_id` only when it belongs to the submitted libra
 New questions return `focus`, naming the person and task to consider, and an encrypted `recovery` token. Submit it with `/v2/answer` to restore the original question after a database reset, within seven days. The token is bound to the owner, quiz ID and translation; its key derives from the existing API_TOKEN. It hides the expected passage and cannot be modified. No new account credential or persistent disk is needed. Previously lost questions without a token require a new situation.
 
 Practice, reflection and prayer suggestions exclude duplicate shortened or expanded ranges. AI evaluations preserve separate passage-specific reasons and applications. External library-practice suggestions appear under a separate heading in the iOS app.
+
+## Meditation coaching · 19 October 2026
+
+Authenticated `/v2/meditation` grades meaning and personal application on a 1–5 rubric using exact corpus text. `/v2/application` adapts saved practice actions into personal plans without fictional names. Both validate structured responses and cache successful coaching results per owner for up to 30 days; raw submitted answers are not stored in this cache. Failed evaluations never produce a grade. Library practice addresses the reader directly. The approved model and existing shared request budget remain unchanged.
+
+Client progression records five combined rewarded meaning/application submissions per saved passage across translations, with same-session improvements paying only the positive score difference. Recall can earn up to five points during the first complete session. Day recommendations of saved passages add two mastery points without account XP.
