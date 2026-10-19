@@ -15,9 +15,9 @@ Bible quotations come from the bundled corpus, never from generated text. See SC
 
 The previous Node source remains in server.js and Git history for rollback; npm start runs app.py.
 
-## Prepared content · 24 September 2026
+## Prepared content · 19 October 2026
 
-1626 independently authored RU/UK situations, each with two accepted passages. Each answer has its own “Why it fits” explanation; each situation has a concrete “How to apply” action, in both languages. All-Bible practice selects from this bank by theme or book without generation calls. Exact prepared references and complete quotations use this authored guidance locally. Other answers retain semantic AI evaluation, which returns both the passage-specific reason and application using exact Bible text. Correct answers grant 5 XP and 2 mastery when the passage is in the library; blank reveals grant neither.
+5000 independently authored RU/UK situations, each with two accepted passages. Each answer has its own “Why it fits” explanation; each situation has a concrete “How to apply” action, in both languages. All-Bible practice selects from this bank by theme or book without generation calls. Exact prepared references and complete quotations use this authored guidance locally. Other answers retain semantic AI evaluation, which returns both the passage-specific reason and application using exact Bible text. Correct answers grant 5 XP and 2 mastery when the passage is in the library; blank reveals grant neither.
 
 The thematic library contains 6000 unique passages, 400 for each of 15 topics. The selection adapts the OpenBible.info topical index (https://www.openbible.info/topics/), CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/); topic assignments and reference mappings were modified for this app. Bible text licensing remains in SCROLLMAPPER-LICENSE.txt.
 
