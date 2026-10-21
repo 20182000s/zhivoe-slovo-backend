@@ -21,6 +21,12 @@ The previous Node source remains in server.js and Git history for rollback; npm 
 
 The thematic library contains 6000 unique passages, 400 for each of 15 topics. The selection adapts the OpenBible.info topical index (https://www.openbible.info/topics/), CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/); topic assignments and reference mappings were modified for this app. Bible text licensing remains in SCROLLMAPPER-LICENSE.txt.
 
+## Everyday practice · 21 October 2026
+
+The 5000 Russian narratives received a complete review, supported by bilingual screening. 505 stories were revised into everyday contexts with corresponding RU/UK reasons and actions. Accepted passages were checked against the exact local corpus and reviewed for their fit to the revised story. The catalog retains two non-overlapping accepted answers per situation.
+
+Library-practice generation now requests everyday work, study, home and conversation scenarios. Prepared all-Bible practice continues to use the local catalog.
+
 Bulk import supports up to 100 passages and 200,000 input characters per request. Limit errors include the allowed amount and excess in Russian or Ukrainian.
 
 ## Practice reliability · 5 October 2026
