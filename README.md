@@ -5,7 +5,7 @@ Backend for the native iPhone app with Synodal and Ogienko Bible texts.
 Render keeps its existing Node service, URL and plan. npm install installs Gunicorn; npm start runs Python WSGI.
 
 Required environment: OPENAI_API_KEY, API_TOKEN (at least 24 random characters).
-Optional: DATABASE_PATH. All AI workloads use the approved `gpt-6.1-sol` model through Responses with medium reasoning. Legacy model-routing environment variables are ignored.
+Optional: DATABASE_PATH. All generative AI workloads use the approved `gpt-6.1-sol` model through Responses with medium reasoning. Library reflection uses `text-embedding-3-small` (512 dimensions) for retrieval only. Legacy generative model-routing environment variables are ignored.
 
 GET /health is public. POST /v1/status and /v2/import, /v2/practice, /v2/answer, /v2/reflect require Bearer API_TOKEN.
 
@@ -42,3 +42,11 @@ Practice, reflection and prayer suggestions exclude duplicate shortened or expan
 Authenticated `/v2/meditation` grades meaning and personal application on a 1–5 rubric using exact corpus text. `/v2/application` adapts saved practice actions into personal plans without fictional names. Both validate structured responses and cache successful coaching results per owner for up to 30 days; raw submitted answers are not stored in this cache. Failed evaluations never produce a grade. Library practice addresses the reader directly. The approved model and existing shared request budget remain unchanged.
 
 Client progression records five combined rewarded meaning/application submissions per saved passage across translations, with same-session improvements paying only the positive score difference. Recall can earn up to five points during the first complete session. Day recommendations of saved passages add two mastery points without account XP.
+
+## Library reflection retrieval · 22 October 2026
+
+`/v2/reflect` sends libraries of 1–99 saved passages directly to the generative model. Libraries of 100–5000 passages use semantic search over every supplied passage, considering the whole story and its separate aspects. The initial shortlist has 30 candidates, expanded to 60 for weak or flat similarity scores. An empty model selection can trigger one wider pass of up to 90–120 candidates within the request deadline. Similarity thresholds are conservative heuristics, not calibrated probabilities.
+
+The generative model receives exact corpus text with short temporary IDs. The server maps its selection back to the original saved passage; it cannot select an outside-library ID. Very long ranges are indexed in lossless chunks, and the model sees the best exact span with adjacent chunks. The app still receives the full original saved passage. All-Bible reflection retains its existing workflow.
+
+Only public passage embeddings are cached in SQLite, keyed by model, dimensions and exact text. Story embeddings stay in memory and are never cached or logged. The shared index is reused across requests and grows only for uncached public text; on an ephemeral Render filesystem it may rebuild after a restart or deployment. Completed index batches survive a later request failure while that database exists. Index and query calls count toward the existing shared daily AI limit, and usage logs distinguish `library_index` and `library_query`. Provider failures return a retryable error rather than a false empty match or a costly silent full-library fallback. The reflection deadline is 110 seconds, below the app's 120-second timeout.

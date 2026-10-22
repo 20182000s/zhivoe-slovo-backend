@@ -19,6 +19,7 @@ import time
 import unicodedata
 import urllib.error
 import urllib.request
+import library_search
 
 ROOT = Path(__file__).parent
 DATA_ROOT = ROOT / 'data' if (ROOT / 'data/Bible.json').is_file() else ROOT
@@ -150,7 +151,8 @@ BASE_INSTRUCTIONS = '''Ты помощник приложения для изу�
 Возвращай только запрошенную структуру. Цитаты НЕ генерируй: сервер сам возьмёт точный текст из базы.'''
 
 def model_for(purpose='general'):
-    # One explicitly approved model for every workload, including photo import.
+    # One explicitly approved generative model, including photo import.
+    # Library retrieval uses a separate embedding model, never for interpretation.
     # Old Render routing variables cannot silently select an earlier model.
     return 'gpt-6.1-sol'
 
@@ -209,6 +211,51 @@ def ask(task, data, schema, *, purpose='general', max_output_tokens=6000, image_
             if content.get('type')=='output_text':parts.append(content.get('text',''))
     try: return json.loads(''.join(parts))
     except (ValueError,TypeError):raise Error('Получен неполный ответ. Попробуй ещё раз.',502)
+
+def embed(texts, *, purpose):
+    """Retrieval only. Generation and interpretation still use model_for()."""
+    key=os.environ.get('OPENAI_API_KEY','')
+    if not key:raise Error('Обработка запросов пока недоступна. Попробуй позже.',503)
+    remaining=ai_remaining()-(35 if purpose=='library_index' else 0)
+    if remaining<1:raise Error('Подготовка библиотеки заняла больше времени. Повтори разбор: готовая часть индекса сохранена.',504,
+        uk='Підготовка бібліотеки тривала довше. Повтори розбір: готова частина індексу збережена.')
+    ai_budget()
+    started=time.monotonic()
+    payload={'model':library_search.MODEL,'dimensions':library_search.DIMENSIONS,
+        'encoding_format':'float','input':texts}
+    req=urllib.request.Request('https://api.openai.com/v1/embeddings',data=json.dumps(payload).encode(),
+        headers={'Authorization':'Bearer '+key,'Content-Type':'application/json'})
+    try:
+        with urllib.request.urlopen(req,timeout=min(45,remaining)) as response:body=json.load(response)
+    except urllib.error.HTTPError as exc:
+        code=None
+        try:
+            detail=json.loads(exc.read(16384)).get('error',{})
+            candidate=detail.get('code') if isinstance(detail,dict) else None
+            if isinstance(candidate,str) and re.fullmatch(r'[a-z_]{1,80}',candidate):code=candidate
+        except (ValueError,TypeError,OSError):pass
+        ai_failure(library_search.MODEL,purpose,started,'http',exc.code,code)
+        raise upstream_error(exc.code,code) from None
+    except (urllib.error.URLError,TimeoutError) as exc:
+        timed_out=isinstance(exc,TimeoutError) or isinstance(getattr(exc,'reason',None),TimeoutError)
+        ai_failure(library_search.MODEL,purpose,started,'timeout' if timed_out else 'connection')
+        raise Error('Не удалось завершить смысловой поиск по библиотеке. Повтори разбор немного позже.',504 if timed_out else 503,
+            uk='Не вдалося завершити змістовий пошук у бібліотеці. Повтори розбір трохи згодом.') from None
+    except (ValueError,TypeError):
+        raise Error('Не удалось прочитать результат поиска. Повтори разбор.',502) from None
+    if not isinstance(body,dict):raise Error('Получен неполный результат поиска. Повтори разбор.',502)
+    usage=body.get('usage',{})
+    print(json.dumps({'event':'ai_usage','model':library_search.MODEL,'purpose':purpose,
+        'seconds':round(time.monotonic()-started,3),'status':'completed',
+        'input_tokens':usage.get('prompt_tokens'),'output_tokens':0,'cached_tokens':0,'reasoning_tokens':0}),flush=True)
+    try:
+        ordered=sorted(body['data'],key=lambda x:x['index'])
+        if [v['index'] for v in ordered]!=list(range(len(texts))):raise ValueError()
+        values=[v['embedding'] for v in ordered]
+        for v in values:library_search.vector(v)
+        return values
+    except (KeyError,ValueError,TypeError,OverflowError):
+        raise Error('Получен неполный результат поиска. Повтори разбор.',502) from None
 
 def import_passages(data):
     text=required_text(data,'text'); version=translation(data)
@@ -837,7 +884,12 @@ def reflect2(data):
     verses=library2(data) if scope=='library' else []
     limit=1 if scope=='library' or excluded else 2
     if scope=='library' and not verses:raise Error('Библиотека пуста. Добавь местописания или выбери всю Библию.')
-    if len(verses)>300:raise Error(f'Разбор поддерживает до 300 местописаний. Сейчас {len(verses)}, превышение — {len(verses)-300}. Выбери всю Библию для поиска опоры.', uk=f'Розбір підтримує до 300 місць Писання. Зараз {len(verses)}, перевищення — {len(verses)-300}. Обери всю Біблію для пошуку опори.')
+    search=None
+    if scope=='library' and len(verses)>=library_search.DIRECT_LIMIT:
+        try:search=library_search.Search(verses,text,embed,DB_PATH,ai_remaining)
+        except (TimeoutError,ValueError):
+            raise Error('Не удалось завершить поиск по библиотеке. Повтори разбор: готовая часть индекса сохранена.',503,
+                uk='Не вдалося завершити пошук у бібліотеці. Повтори розбір: готова частина індексу збережена.') from None
     if scope=='all':
         candidates=3 if excluded else 2
         refs=ask(f'Предложи до {candidates} библейских местописаний, которые помогают понять или описывают рассказанную ситуацию и могут подсказать действие. '
@@ -855,17 +907,32 @@ def reflect2(data):
             if len(verses)>=limit:break
     if not verses:return {'summary':{'ru':'Новая подходящая опора не найдена. Попробуй уточнить ситуацию.' if excluded else 'Подходящие местописания не найдены. Попробуй подробнее описать ситуацию.',
         'uk':'Нова доречна опора не знайдена. Спробуй уточнити ситуацію.' if excluded else 'Доречних місць Писання не знайдено. Спробуй докладніше описати ситуацію.'},'suggestions':[]}
-    schema=object_schema({'summary':WORDS,'suggestions':{'type':'array','maxItems':limit,'items':object_schema({'id':{'type':'string','enum':[p['id'] for p in verses]},'reason':WORDS,'action':WORDS,'shortAction':WORDS})}})
-    out=ask(f'Осмысли ситуацию. Выбери до {limit} подходящих местописаний СТРОГО из выданных. '
-        'Дай объяснение связи и конкретное действие, опираясь на точные тексты и их контекст. Если ничего не подходит, suggestions пустой. '
-        'Действие формулируй на следующий раз в похожей ситуации, не требуй выполнить сегодня. '
-        'В shortAction кратко переформулируй действие одной фразой до 100 символов на каждом языке для списка применений. '
-        'Дай одинаковый по смыслу разбор на русском и украинском. Не цитируй по памяти и не говори от имени Бога.',{'day':text,'passages':verses},schema,purpose='complex' if scope=='all' else 'general')
-    allowed={p['id']:p for p in verses};result=[];seen=set()
-    for s in out.get('suggestions',[])[:limit]:
-        if s.get('id') not in allowed:raise Error('Не удалось подобрать местописание из выбранного списка. Повтори запрос.',502)
-        if s['id'] in seen:continue
-        seen.add(s['id']);result.append({'passage':allowed[s['id']],'reason':s['reason'],'action':s['action'],'shortAction':s.get('shortAction',s['action'])})
+    count=search.initial_count if search else len(verses)
+    for attempt in range(2):
+        supplied=search.prompt_passages(count) if search else verses
+        selected=search.candidates(count) if search else verses
+        allowed={p['id']:original for p,original in zip(supplied,selected)}
+        schema=object_schema({'summary':WORDS,'suggestions':{'type':'array','maxItems':limit,'items':object_schema({'id':{'type':'string','enum':list(allowed)},'reason':WORDS,'action':WORDS,'shortAction':WORDS})}})
+        task=f'Осмысли ситуацию. Выбери до {limit} подходящих местописаний СТРОГО из выданных. '
+        task+='Дай объяснение связи и конкретное действие, опираясь на точные тексты и их контекст. Если ничего не подходит, suggestions пустой. '
+        task+='Действие формулируй на следующий раз в похожей ситуации, не требуй выполнить сегодня. '
+        task+='В shortAction кратко переформулируй действие одной фразой до 100 символов на каждом языке для списка применений. '
+        task+='Дай одинаковый по смыслу разбор на русском и украинском. Не цитируй по памяти и не говори от имени Бога.'
+        if search:task+=' Поле excerpt=true означает точный отрывок длинного сохранённого местописания; не приписывай невидимым частям дополнительный смысл. Идентификатор ответа — короткий id из списка.'
+        out=ask(task,{'day':text,'passages':supplied},schema,purpose='complex' if scope=='all' else 'general')
+        result=[];seen=set()
+        for s in out.get('suggestions',[])[:limit]:
+            if s.get('id') not in allowed:raise Error('Не удалось подобрать местописание из выбранного списка. Повтори запрос.',502)
+            if s['id'] in seen:continue
+            seen.add(s['id']);result.append({'passage':allowed[s['id']],'reason':s['reason'],'action':s['action'],'shortAction':s.get('shortAction',s['action'])})
+        # A model rejecting the shortlist gets a wider second look, not an
+        # invented support or a claim that no verse in the library can help.
+        if not search or result or count==len(verses) or attempt or ai_remaining()<35:break
+        count=min(len(verses),max(90,count*2))
+    if search:
+        print(json.dumps({'event':'library_retrieval','library_size':len(verses),'candidates':count,
+            'weak_match':search.weak,'index_hits':search.hits,'index_created':search.misses,
+            'generation_attempts':attempt+1}),flush=True)
     return {'summary':out['summary'],'suggestions':distinct_suggestions(result)}
 
 def source2(data):
@@ -950,7 +1017,8 @@ def application(environ,start_response):
     status=200
     data={}
     error_uk=None
-    deadline_token=AI_DEADLINE.set(time.monotonic()+100 if environ.get('PATH_INFO')=='/v2/answer' else None)
+    window={'/v2/answer':100,'/v2/reflect':110}.get(environ.get('PATH_INFO'))
+    deadline_token=AI_DEADLINE.set(time.monotonic()+window if window else None)
     try:
         path=environ.get('PATH_INFO','')
         if path=='/health' and environ.get('REQUEST_METHOD')=='GET':result={'ok':True}
